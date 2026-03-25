@@ -297,6 +297,7 @@ export function writeConsolidatedHydrationScript(
   queue: Array<{
     id: number,
     moduleId: string,
+    moduleChunks: Array<string>,
     moduleName: string,
     serializedProps: string,
   }>,

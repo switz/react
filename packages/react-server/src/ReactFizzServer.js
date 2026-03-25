@@ -425,10 +425,12 @@ export opaque type Request = {
   // boundaries. Opaque to Fizz itself.
   +bundlerConfig: mixed,
   // Queue of client boundary hydration data to emit during flushCompletedQueues.
-  // Each entry contains the boundary ID, module reference, and serialized props.
+  // Module references use Flight's format: {id, chunks, name} — the same shape
+  // that __webpack_chunk_load__ + __webpack_require__ consume.
   clientBoundaryQueue: Array<{
     id: number,
     moduleId: string,
+    moduleChunks: Array<string>,
     moduleName: string,
     serializedProps: string,
   }>,
@@ -2967,24 +2969,48 @@ function renderClientBoundary(
 ): void {
   const segment = task.blockedSegment;
   if (segment === null) {
-    // Replay mode — just render the component without markers.
     renderFunctionComponent(request, task, keyPath, type, props);
     return;
   }
 
-  // Assign a unique ID for this client boundary.
   const boundaryId = request.nextClientBoundaryId++;
 
-  // Resolve the module reference from the client reference.
-  // Client references have $$id (module URL) on them.
-  const moduleId: string = type.$$id || '';
-  // The export name is typically '*' for default or the named export.
-  // In webpack, this is encoded in the manifest. For now, extract from $$id
-  // or default to '*'. The full resolution via bundlerConfig happens in
-  // a later step when we have the complete manifest integration.
-  const moduleName: string = '*';
+  // Resolve the client reference using the same bundler protocol as Flight.
+  // bundlerConfig is the client manifest (same object passed to Flight's
+  // renderToPipeableStream as webpackMap). It maps $$id → {id, chunks, name}.
+  const bundlerConfig: any = request.bundlerConfig;
+  const refId: string = type.$$id || '';
+  let metadata: {id: string, chunks: Array<string>, name: string} | null = null;
 
-  // Serialize props for hydration using the focused serializer.
+  if (bundlerConfig != null) {
+    const moduleData = bundlerConfig[refId];
+    if (moduleData != null) {
+      // Exact match (e.g., "file:///path/to/module.js" → {id, chunks, name})
+      metadata = moduleData;
+    }
+  }
+
+  // Resolve the actual component for SSR rendering.
+  // Use __webpack_require__ (or equivalent) to get the real module, then
+  // extract the named export — same as Flight client's requireModule().
+  let resolvedType = type;
+  if (metadata != null) {
+    // $FlowFixMe[unsupported-syntax] — __webpack_require__ is a webpack global
+    if (typeof __webpack_require__ === 'function') {
+      const moduleExports = __webpack_require__(metadata.id);
+      if (metadata.name === '*') {
+        resolvedType = moduleExports;
+      } else if (metadata.name === '') {
+        resolvedType = moduleExports.__esModule
+          ? moduleExports.default
+          : moduleExports;
+      } else if (moduleExports[metadata.name] != null) {
+        resolvedType = moduleExports[metadata.name];
+      }
+    }
+  }
+
+  // Serialize props for hydration.
   let serializedProps: string;
   try {
     serializedProps = serializeProps(props);
@@ -2992,41 +3018,19 @@ function renderClientBoundary(
     serializedProps = '{}';
   }
 
-  // Resolve the actual component module for SSR rendering.
-  // The `type` is a client reference proxy (function(){} with $$typeof/$$id)
-  // that doesn't contain the real component code. We need to resolve the
-  // actual module via the bundler config, similar to how the Flight client
-  // resolves modules via __webpack_require__.
-  //
-  // If bundlerConfig provides a resolveClientComponent function, use it.
-  // Otherwise fall back to the proxy (which may render nothing — this is
-  // the correct behavior if no SSR module resolution is configured).
-  let resolvedType = type;
-  const bundlerConfig = request.bundlerConfig;
-  if (
-    bundlerConfig != null &&
-    typeof bundlerConfig.resolveClientComponent === 'function'
-  ) {
-    const resolved = bundlerConfig.resolveClientComponent(type.$$id);
-    if (resolved != null) {
-      resolvedType = resolved;
-    }
-  }
-
-  // Emit the opening boundary marker into the segment.
   pushStartClientBoundary(segment.chunks, boundaryId);
-
-  // Render the client component to HTML normally using the resolved module.
   renderFunctionComponent(request, task, keyPath, resolvedType, props);
-
-  // Emit the closing boundary marker.
   pushEndClientBoundary(segment.chunks);
 
-  // Queue hydration data for emission during flushCompletedQueues.
+  // Queue hydration data using Flight's module reference format.
+  // {id, chunks, name} is the same shape Flight uses, so the client can
+  // load modules via the standard __webpack_chunk_load__ + __webpack_require__
+  // protocol without any custom parsing.
   request.clientBoundaryQueue.push({
     id: boundaryId,
-    moduleId,
-    moduleName,
+    moduleId: metadata != null ? metadata.id : refId,
+    moduleChunks: metadata != null ? metadata.chunks : [],
+    moduleName: metadata != null ? metadata.name : '*',
     serializedProps,
   });
 }

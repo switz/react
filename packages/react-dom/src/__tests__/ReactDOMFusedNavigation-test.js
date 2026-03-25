@@ -111,7 +111,7 @@ describe('ReactDOMFusedNavigation', () => {
 
       // Standard path should NOT have any fused markers
       expect(standard).not.toContain('<!--C:');
-      expect(standard).not.toContain('data-fused-hydration');
+      expect(standard).not.toContain('__FUSED');
     });
   });
 
@@ -132,7 +132,7 @@ describe('ReactDOMFusedNavigation', () => {
       const html = await collectStream(<App />);
       expect(html).toContain('Click');
       expect(html).not.toContain('<!--C:');
-      expect(html).not.toContain('data-fused-hydration');
+      expect(html).not.toContain('__FUSED');
     });
 
     it('fused path wraps client ref in markers with hydration data', async () => {
@@ -154,7 +154,7 @@ describe('ReactDOMFusedNavigation', () => {
       expect(html).toContain('Click');
       expect(html).toContain('<!--C:0-->');
       expect(html).toContain('<!--/C-->');
-      expect(html).toContain('data-fused-hydration');
+      expect(html).toContain('__FUSED');
     });
   });
 

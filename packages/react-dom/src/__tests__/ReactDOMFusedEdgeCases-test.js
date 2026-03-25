@@ -78,7 +78,7 @@ describe('ReactDOMFusedEdgeCases', () => {
       expect(html).toContain('<!--C:0-->');
       expect(html).toContain('<!--/C-->');
       // Hydration data contains the module ref (props are deferred)
-      expect(html).toContain('data-fused-hydration');
+      expect(html).toContain('__FUSED');
     });
   });
 
@@ -142,11 +142,11 @@ describe('ReactDOMFusedEdgeCases', () => {
       expect(html).toContain('<!--C:1-->');
       expect(html).toContain('<!--C:2-->');
       // All three boundaries in consolidated hydration script
-      expect(html).toContain('data-fused-hydration');
-      const scriptMatch = html.match(/data-fused-hydration>(.*?)<\/script>/);
+      expect(html).toContain('__FUSED');
+      const scriptMatch = html.match(/self\.__FUSED=(.*?)<\/script>/);
       expect(scriptMatch).not.toBeNull();
       const payload = JSON.parse(scriptMatch[1]);
-      expect(payload.b.length).toBe(3);
+      expect(Object.keys(payload.b).length).toBe(3);
     });
   });
 
@@ -350,7 +350,7 @@ describe('ReactDOMFusedEdgeCases', () => {
       // Markers still present
       expect(html).toContain('<!--C:0-->');
       // Hydration data falls back to empty props
-      expect(html).toContain('data-fused-hydration');
+      expect(html).toContain('__FUSED');
     });
 
     it('Set in props falls back gracefully', async () => {
@@ -379,7 +379,7 @@ describe('ReactDOMFusedEdgeCases', () => {
 
       const html = await collectStream(<ClientForm action={serverAction} />);
       // Hydration data contains the module ref for the form component
-      expect(html).toContain('data-fused-hydration');
+      expect(html).toContain('__FUSED');
       expect(html).toContain('test#ClientForm');
     });
   });

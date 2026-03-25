@@ -140,16 +140,10 @@ const ClientCard = clientExports(function ClientCard({product}) {
   );
 });
 
-// Build O(1) module resolver for fused mode (equivalent to __webpack_require__)
-const clientModuleById = new Map();
-for (const [idx, mod] of Object.entries(clientMods)) {
-  clientModuleById.set(url.pathToFileURL(idx).href, mod);
-}
-const fusedBundlerConfig = {
-  resolveClientComponent(id) {
-    return clientModuleById.get(id) || null;
-  },
-};
+// For fused mode, pass the same client manifest that Flight uses (clientMap).
+// This maps $$id → {id, chunks, name}. Fizz uses it to resolve client
+// references via __webpack_require__, same as the Flight client does.
+const fusedBundlerConfig = clientMap;
 
 function ServerApp() {
   const e = SReact.createElement;

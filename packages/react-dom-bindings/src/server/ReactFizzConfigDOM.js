@@ -4630,10 +4630,23 @@ function escapeScriptContent(text: string): string {
 }
 
 // Writes a single consolidated <script> containing hydration data for all
-// client boundaries discovered so far. Format:
-//   <script data-fused-hydration>{"b":[[id,"moduleId","name"],...]}</script>
+// client boundaries. Uses Flight's module reference format so the existing
+// RSC client runtime can load modules without any custom parsing.
+//
+// Format: self.__FUSED={
+//   b: {                              // boundaries
+//     "0": [moduleId, chunks, name, serializedProps],
+//     "1": [moduleId, chunks, name, serializedProps],
+//   }
+// }
+//
+// Each boundary entry is [id, chunks, name, props] — the first three fields
+// match Flight's client reference metadata exactly. The client can call:
+//   __webpack_chunk_load__(chunks[i]) for each chunk
+//   __webpack_require__(id)[name] to get the component
+//   JSON.parse(props) to get the serialized props
 const consolidatedHydrationStart = stringToPrecomputedChunk(
-  '<script data-fused-hydration>',
+  '<script>self.__FUSED=',
 );
 const consolidatedHydrationEnd = stringToPrecomputedChunk('</script>');
 
@@ -4642,28 +4655,25 @@ export function writeConsolidatedHydrationScript(
   queue: Array<{
     id: number,
     moduleId: string,
+    moduleChunks: Array<string>,
     moduleName: string,
     serializedProps: string,
   }>,
 ): boolean {
   writeChunk(destination, consolidatedHydrationStart);
-  // Build a compact array: [[id, moduleId, moduleName], ...]
-  // Module refs are deduped by building a module table.
-  const modules: Array<string> = [];
-  const moduleIndex: {[string]: number} = {};
-  const entries: Array<[number, number]> = [];
+  const boundaries: {[string]: mixed} = {};
   for (let i = 0; i < queue.length; i++) {
-    const boundary = queue[i];
-    const key = boundary.moduleId;
-    let idx = moduleIndex[key];
-    if (idx === undefined) {
-      idx = modules.length;
-      modules.push(key);
-      moduleIndex[key] = idx;
-    }
-    entries.push([boundary.id, idx]);
+    const b = queue[i];
+    // [moduleId, chunkUrls, exportName, serializedProps]
+    // First 3 fields are Flight's module reference format.
+    boundaries[String(b.id)] = [
+      b.moduleId,
+      b.moduleChunks,
+      b.moduleName,
+      b.serializedProps,
+    ];
   }
-  const payload = JSON.stringify({m: modules, b: entries});
+  const payload = JSON.stringify({b: boundaries});
   writeChunk(destination, stringToChunk(escapeScriptContent(payload)));
   return writeChunkAndReturn(destination, consolidatedHydrationEnd);
 }

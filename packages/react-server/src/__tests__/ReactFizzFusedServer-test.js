@@ -385,7 +385,7 @@ describe('ReactFizzFusedServer', () => {
         experimental_fusedMode: true,
       });
       // Should contain a consolidated hydration script with module ref
-      expect(html).toContain('data-fused-hydration');
+      expect(html).toContain('__FUSED');
       expect(html).toContain('my-module#default');
     });
 
@@ -428,7 +428,7 @@ describe('ReactFizzFusedServer', () => {
       expect(html).toContain('<!--C:1-->');
       // Two hydration scripts
       // Consolidated hydration script contains both module refs
-      expect(html).toContain('data-fused-hydration');
+      expect(html).toContain('__FUSED');
       expect(html).toContain('module-a#A');
       expect(html).toContain('module-b#B');
     });
@@ -499,7 +499,7 @@ describe('ReactFizzFusedServer', () => {
         {experimental_fusedMode: true},
       );
       // Consolidated hydration script contains module ref
-      expect(html).toContain('data-fused-hydration');
+      expect(html).toContain('__FUSED');
       expect(html).toContain('props-test#default');
       // HTML still contains rendered content
       expect(html).toContain('Hello');
@@ -532,7 +532,7 @@ describe('ReactFizzFusedServer', () => {
       expect(html).not.toContain('<!--C:');
       expect(html).not.toContain('<!--/C-->');
       // No hydration scripts
-      expect(html).not.toContain('data-fused-hydration');
+      expect(html).not.toContain('__FUSED');
     });
   });
 });
