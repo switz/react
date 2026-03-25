@@ -81,6 +81,12 @@ type Options = {
   formState?: ReactFormState<any, any> | null,
   onHeaders?: (headers: HeadersDescriptor) => void,
   maxHeadersLength?: number,
+  // Fused renderer: when true, Fizz renders server components inline
+  // instead of expecting Flight to have pre-resolved them.
+  experimental_fusedMode?: boolean,
+  // The bundler config (client manifest) for resolving client references.
+  // Required when experimental_fusedMode is true.
+  experimental_bundlerConfig?: mixed,
 };
 
 type ResumeOptions = {
@@ -125,6 +131,8 @@ function createRequestImpl(children: ReactNodeList, options: void | Options) {
     options ? options.onShellError : undefined,
     undefined,
     options ? options.formState : undefined,
+    options ? options.experimental_fusedMode : undefined,
+    options ? options.experimental_bundlerConfig : undefined,
   );
 }
 

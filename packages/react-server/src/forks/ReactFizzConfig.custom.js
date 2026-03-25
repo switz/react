@@ -67,6 +67,10 @@ export const writeCompletedRoot = $$$config.writeCompletedRoot;
 export const writePlaceholder = $$$config.writePlaceholder;
 export const pushStartActivityBoundary = $$$config.pushStartActivityBoundary;
 export const pushEndActivityBoundary = $$$config.pushEndActivityBoundary;
+export const pushStartClientBoundary = $$$config.pushStartClientBoundary;
+export const pushEndClientBoundary = $$$config.pushEndClientBoundary;
+export const writeClientBoundaryScript = $$$config.writeClientBoundaryScript;
+export const writeConsolidatedHydrationScript = $$$config.writeConsolidatedHydrationScript;
 export const writeStartCompletedSuspenseBoundary =
   $$$config.writeStartCompletedSuspenseBoundary;
 export const writeStartPendingSuspenseBoundary =

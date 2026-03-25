@@ -27,6 +27,10 @@ chrome-user-data
 /.worktrees
 .claude/*.local.*
 
+.lb
+.pi
+.agents
+
 packages/react-devtools-core/dist
 packages/react-devtools-extensions/chrome/build
 packages/react-devtools-extensions/chrome/*.crx
@@ -41,3 +45,5 @@ packages/react-devtools-inline/dist
 packages/react-devtools-shell/dist
 packages/react-devtools-timeline/dist
 
+scripts/bench/fused-renderer-bench-results.json
+scripts/bench/fused-renderer-concurrent-results.json
