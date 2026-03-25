@@ -46,3 +46,4 @@ packages/react-devtools-shell/dist
 packages/react-devtools-timeline/dist
 
 scripts/bench/fused-renderer-bench-results.json
+scripts/bench/fused-renderer-concurrent-results.json

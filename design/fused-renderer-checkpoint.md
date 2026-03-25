@@ -1,8 +1,26 @@
 # Fused Renderer Go/No-Go Checkpoint
 
 **Task**: TIM-482
-**Date**: 2026-03-25
+**Date**: 2026-03-25 (revised with v3 concurrent throughput data)
 **Decision**: **GO — Narrow scope (Approach B+, sync server components first)**
+
+---
+
+## Performance Validation Update (v3)
+
+The original performance spike (TIM-483) reported 54–79% Flight overhead using synthetic sync-only benchmarks. A v2 revision added async I/O simulation and reported only 1–4% overhead. **Both were measuring the wrong thing.** Wall-clock time including I/O wait is irrelevant for throughput — CPU time on the single-threaded Node.js event loop is the bottleneck.
+
+v3 measures concurrent throughput under realistic server load (c=1 to c=50). Key findings:
+
+| Metric (c=25, 226 products) | Full Pipeline | Fizz Only (fused target) | Improvement |
+|------------------------------|--------------|------------------------|-------------|
+| **Throughput** | 102 req/s | 526 req/s | **5.2x** |
+| **p99 latency** | 342ms | 49ms | **7.0x** |
+| **Heap pressure** | 282 MB | 72 MB | **-210 MB** |
+
+The throughput drop **worsens under load** (4x at c=1 → 5.9x at c=50) due to GC pressure from transient 349 KB wire format buffers per request. This directly explains the observed 400 rps → 40 rps drop in real-world Next.js/timber deployments (React-level 3–6x × framework overhead 1.5–2x ≈ 10x).
+
+See `design/fused-renderer-perf-validation.md` for full data.
 
 ---
 
