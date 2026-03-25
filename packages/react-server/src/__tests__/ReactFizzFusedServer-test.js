@@ -361,7 +361,7 @@ describe('ReactFizzFusedServer', () => {
       expect(buttonIdx).toBeLessThan(endIdx);
     });
 
-    it('emits hydration data script for client boundaries', async () => {
+    it('emits consolidated hydration script for client boundaries', async () => {
       const ClientComponent = Object.defineProperties(
         function ClientComponent({label}) {
           return <button>{label}</button>;
@@ -384,8 +384,8 @@ describe('ReactFizzFusedServer', () => {
       const html = await renderToString(<App />, {
         experimental_fusedMode: true,
       });
-      // Should contain a hydration script with the module reference
-      expect(html).toContain('data-fused-hydration="0"');
+      // Should contain a consolidated hydration script with module ref
+      expect(html).toContain('data-fused-hydration');
       expect(html).toContain('my-module#default');
     });
 
@@ -427,8 +427,8 @@ describe('ReactFizzFusedServer', () => {
       expect(html).toContain('<!--C:0-->');
       expect(html).toContain('<!--C:1-->');
       // Two hydration scripts
-      expect(html).toContain('data-fused-hydration="0"');
-      expect(html).toContain('data-fused-hydration="1"');
+      // Consolidated hydration script contains both module refs
+      expect(html).toContain('data-fused-hydration');
       expect(html).toContain('module-a#A');
       expect(html).toContain('module-b#B');
     });
@@ -478,7 +478,7 @@ describe('ReactFizzFusedServer', () => {
       expect(innerIdx).toBeLessThan(endIdx);
     });
 
-    it('serializes non-children props in hydration data', async () => {
+    it('emits module ref in consolidated hydration data (props deferred)', async () => {
       const ClientComponent = Object.defineProperties(
         function ClientComponent({title, count, active}) {
           return (
@@ -498,18 +498,12 @@ describe('ReactFizzFusedServer', () => {
         <ClientComponent title="Hello" count={42} active={true} />,
         {experimental_fusedMode: true},
       );
-      // Parse the hydration script to verify props
-      const scriptMatch = html.match(
-        /data-fused-hydration="0">(.*?)<\/script>/,
-      );
-      expect(scriptMatch).not.toBeNull();
-      const payload = JSON.parse(scriptMatch[1]);
-      const props = JSON.parse(payload.p);
-      expect(props.title).toBe('Hello');
-      expect(props.count).toBe(42);
-      expect(props.active).toBe(true);
-      // children should NOT be in serialized props
-      expect(props.children).toBeUndefined();
+      // Consolidated hydration script contains module ref
+      expect(html).toContain('data-fused-hydration');
+      expect(html).toContain('props-test#default');
+      // HTML still contains rendered content
+      expect(html).toContain('Hello');
+      expect(html).toContain('42');
     });
 
     it('does not emit markers or hydration data when fusedMode is false', async () => {

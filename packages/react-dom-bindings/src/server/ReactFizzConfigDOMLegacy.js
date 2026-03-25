@@ -27,6 +27,7 @@ import {
   pushStartClientBoundary as pushStartClientBoundaryImpl,
   pushEndClientBoundary as pushEndClientBoundaryImpl,
   writeClientBoundaryScript as writeClientBoundaryScriptImpl,
+  writeConsolidatedHydrationScript as writeConsolidatedHydrationScriptImpl,
   writeStartCompletedSuspenseBoundary as writeStartCompletedSuspenseBoundaryImpl,
   writeStartClientRenderedSuspenseBoundary as writeStartClientRenderedSuspenseBoundaryImpl,
   writeEndCompletedSuspenseBoundary as writeEndCompletedSuspenseBoundaryImpl,
@@ -289,6 +290,18 @@ export function writeClientBoundaryScript(
     moduleName,
     serializedProps,
   );
+}
+
+export function writeConsolidatedHydrationScript(
+  destination: Destination,
+  queue: Array<{
+    id: number,
+    moduleId: string,
+    moduleName: string,
+    serializedProps: string,
+  }>,
+): boolean {
+  return writeConsolidatedHydrationScriptImpl(destination, queue);
 }
 
 export function writeStartCompletedSuspenseBoundary(

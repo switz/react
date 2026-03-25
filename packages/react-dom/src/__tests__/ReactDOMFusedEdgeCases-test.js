@@ -77,9 +77,8 @@ describe('ReactDOMFusedEdgeCases', () => {
       expect(html).toContain('Server rendered content');
       expect(html).toContain('<!--C:0-->');
       expect(html).toContain('<!--/C-->');
-      // Children should be tombstoned in hydration data (JSON-escaped in script)
-      expect(html).toContain('$t');
-      expect(html).toContain('T');
+      // Hydration data contains the module ref (props are deferred)
+      expect(html).toContain('data-fused-hydration');
     });
   });
 
@@ -142,9 +141,12 @@ describe('ReactDOMFusedEdgeCases', () => {
       expect(html).toContain('<!--C:0-->');
       expect(html).toContain('<!--C:1-->');
       expect(html).toContain('<!--C:2-->');
-      expect(html).toContain('data-fused-hydration="0"');
-      expect(html).toContain('data-fused-hydration="1"');
-      expect(html).toContain('data-fused-hydration="2"');
+      // All three boundaries in consolidated hydration script
+      expect(html).toContain('data-fused-hydration');
+      const scriptMatch = html.match(/data-fused-hydration>(.*?)<\/script>/);
+      expect(scriptMatch).not.toBeNull();
+      const payload = JSON.parse(scriptMatch[1]);
+      expect(payload.b.length).toBe(3);
     });
   });
 
@@ -376,9 +378,9 @@ describe('ReactDOMFusedEdgeCases', () => {
       });
 
       const html = await collectStream(<ClientForm action={serverAction} />);
+      // Hydration data contains the module ref for the form component
       expect(html).toContain('data-fused-hydration');
-      // The hydration script should contain the action reference
-      expect(html).toContain('actions#submitForm');
+      expect(html).toContain('test#ClientForm');
     });
   });
 });

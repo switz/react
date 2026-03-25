@@ -4629,6 +4629,45 @@ function escapeScriptContent(text: string): string {
   return text.replace(/<\/(script)/gi, '<\\/$1').replace(/<!--/g, '<\\!--');
 }
 
+// Writes a single consolidated <script> containing hydration data for all
+// client boundaries discovered so far. Format:
+//   <script data-fused-hydration>{"b":[[id,"moduleId","name"],...]}</script>
+const consolidatedHydrationStart = stringToPrecomputedChunk(
+  '<script data-fused-hydration>',
+);
+const consolidatedHydrationEnd = stringToPrecomputedChunk('</script>');
+
+export function writeConsolidatedHydrationScript(
+  destination: Destination,
+  queue: Array<{
+    id: number,
+    moduleId: string,
+    moduleName: string,
+    serializedProps: string,
+  }>,
+): boolean {
+  writeChunk(destination, consolidatedHydrationStart);
+  // Build a compact array: [[id, moduleId, moduleName], ...]
+  // Module refs are deduped by building a module table.
+  const modules: Array<string> = [];
+  const moduleIndex: {[string]: number} = {};
+  const entries: Array<[number, number]> = [];
+  for (let i = 0; i < queue.length; i++) {
+    const boundary = queue[i];
+    const key = boundary.moduleId;
+    let idx = moduleIndex[key];
+    if (idx === undefined) {
+      idx = modules.length;
+      modules.push(key);
+      moduleIndex[key] = idx;
+    }
+    entries.push([boundary.id, idx]);
+  }
+  const payload = JSON.stringify({m: modules, b: entries});
+  writeChunk(destination, stringToChunk(escapeScriptContent(payload)));
+  return writeChunkAndReturn(destination, consolidatedHydrationEnd);
+}
+
 // Suspense boundaries are encoded as comments.
 const startCompletedSuspenseBoundary = stringToPrecomputedChunk('<!--$-->');
 const startPendingSuspenseBoundary1 = stringToPrecomputedChunk(

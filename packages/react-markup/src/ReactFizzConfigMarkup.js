@@ -208,6 +208,14 @@ export function writeClientBoundaryScript(
   return true;
 }
 
+export function writeConsolidatedHydrationScript(
+  destination: Destination,
+  queue: Array<mixed>,
+): boolean {
+  // Markup doesn't have any instructions.
+  return true;
+}
+
 export function writeStartCompletedSuspenseBoundary(
   destination: Destination,
   renderState: RenderState,
