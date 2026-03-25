@@ -70,13 +70,25 @@ describe('ReactFizzHydrationSerializer', () => {
   });
 
   describe('dates', () => {
-    it('serializes Date as tagged value', () => {
+    it('serializes Date as tagged value in slow path', () => {
+      // When Date is combined with a type that triggers slow path (e.g. undefined),
+      // it gets the tagged format.
       const date = new Date('2026-01-15T00:00:00.000Z');
-      const result = parse({created: date});
+      const result = parse({created: date, undef: undefined});
       expect(result.created).toEqual({
         $t: 'D',
         v: '2026-01-15T00:00:00.000Z',
       });
+      expect(result.undef).toEqual({$t: 'u'});
+    });
+
+    it('serializes Date as ISO string in fast path', () => {
+      // When all other props are JSON-safe, Date.toJSON() produces an ISO
+      // string which JSON.stringify uses directly. This is acceptable —
+      // the client can reconstruct via new Date(str).
+      const date = new Date('2026-01-15T00:00:00.000Z');
+      const result = parse({created: date, label: 'test'});
+      expect(result.created).toBe('2026-01-15T00:00:00.000Z');
     });
   });
 
