@@ -1,16 +1,15 @@
 'use strict';
 
 /**
- * Fused Renderer Performance Validation Benchmark
+ * Fused Renderer Performance Validation Benchmark (v2 — realistic)
  *
- * Measures the Flight→Fizz pipeline overhead to validate whether
- * fusing the renderers would deliver meaningful performance wins.
+ * Measures the Flight→Fizz pipeline overhead with realistic scenarios:
+ * async server components, Suspense boundaries, real prop sizes.
  *
  * Usage: NODE_ENV=production node --expose-gc scripts/bench/fused-renderer-bench.js
  */
 
 const {performance} = require('perf_hooks');
-const {PassThrough, Readable} = require('stream');
 const path = require('path');
 const url = require('url');
 const Module = require('module');
@@ -103,17 +102,22 @@ const FlightClient = require(path.join(
 ));
 
 // ---------------------------------------------------------------------------
-// Utilities
+// Pipeline runners (extracted to separate file)
 // ---------------------------------------------------------------------------
 
-function collectStream(stream) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    stream.on('data', chunk => chunks.push(chunk));
-    stream.on('end', () => resolve(Buffer.concat(chunks)));
-    stream.on('error', reject);
-  });
-}
+const {createPipelineRunners} = require('./fused-renderer-pipelines');
+const {runFullPipeline, runIsolatedPhases} = createPipelineRunners({
+  FlightServer,
+  FlightClient,
+  ReactDOMServer,
+  React,
+  webpackClientMap,
+  ssrModuleMap,
+});
+
+// ---------------------------------------------------------------------------
+// Statistics helpers
+// ---------------------------------------------------------------------------
 
 function formatBytes(bytes) {
   if (bytes < 1024) return bytes + ' B';
@@ -136,6 +140,7 @@ function mean(arr) {
 }
 
 function stdev(arr) {
+  if (arr.length < 2) return 0;
   const m = mean(arr);
   return Math.sqrt(
     arr.reduce((acc, v) => acc + (v - m) ** 2, 0) / (arr.length - 1)
@@ -143,173 +148,19 @@ function stdev(arr) {
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline runners
-// ---------------------------------------------------------------------------
-
-/**
- * Full three-pass pipeline: Flight serialize → Flight deserialize → Fizz render
- */
-async function runFullPipeline(scenario) {
-  const result = {
-    flightSerializeMs: 0,
-    flightDeserializeMs: 0,
-    fizzRenderMs: 0,
-    totalMs: 0,
-    flightPayloadBytes: 0,
-    htmlOutputBytes: 0,
-    totalBytes: 0,
-    memBefore: 0,
-    memAfter: 0,
-    memDelta: 0,
-  };
-
-  if (global.gc) global.gc();
-  result.memBefore = process.memoryUsage().heapUsed;
-  const totalStart = performance.now();
-
-  // Phase 1: Flight serialization
-  const flightStart = performance.now();
-  const flightStream = new PassThrough();
-  const flightPipeable = FlightServer.renderToPipeableStream(
-    scenario.tree,
-    webpackClientMap
-  );
-  const flightCollectPromise = collectStream(flightStream);
-  flightPipeable.pipe(flightStream);
-  const flightBuffer = await flightCollectPromise;
-  result.flightSerializeMs = performance.now() - flightStart;
-  result.flightPayloadBytes = flightBuffer.length;
-
-  // Phase 2: Flight deserialization
-  const deserStart = performance.now();
-  const flightReadable = new Readable({
-    read() {
-      this.push(flightBuffer);
-      this.push(null);
-    },
-  });
-  const ssrManifest = {
-    moduleMap: ssrModuleMap,
-    moduleLoading: {prefix: '/'},
-    serverModuleMap: null,
-  };
-  const flightResponse = FlightClient.createFromNodeStream(
-    flightReadable,
-    ssrManifest
-  );
-  await flightResponse;
-  result.flightDeserializeMs = performance.now() - deserStart;
-
-  // Phase 3: Fizz HTML rendering
-  const fizzStart = performance.now();
-  function ClientRoot() {
-    return React.use(flightResponse);
-  }
-  const htmlStream = new PassThrough();
-  const htmlCollectPromise = collectStream(htmlStream);
-  await new Promise((resolve, reject) => {
-    const pipeable = ReactDOMServer.renderToPipeableStream(
-      React.createElement(ClientRoot),
-      {
-        onShellReady() {
-          pipeable.pipe(htmlStream);
-        },
-        onAllReady() {
-          resolve();
-        },
-        onShellError: reject,
-        onError: reject,
-      }
-    );
-  });
-  htmlStream.end();
-  const htmlBuffer = await htmlCollectPromise;
-  result.fizzRenderMs = performance.now() - fizzStart;
-  result.htmlOutputBytes = htmlBuffer.length;
-  result.totalMs = performance.now() - totalStart;
-  result.totalBytes = result.flightPayloadBytes + result.htmlOutputBytes;
-
-  if (global.gc) global.gc();
-  result.memAfter = process.memoryUsage().heapUsed;
-  result.memDelta = result.memAfter - result.memBefore;
-  return result;
-}
-
-/**
- * Fizz-only pipeline (pre-resolved elements, no Flight overhead measured).
- */
-async function runFizzOnlyPipeline(scenario) {
-  const result = {fizzRenderMs: 0, htmlOutputBytes: 0};
-
-  // Resolve through Flight first (off the clock)
-  const flightStream = new PassThrough();
-  const flightPipeable = FlightServer.renderToPipeableStream(
-    scenario.tree,
-    webpackClientMap
-  );
-  const flightCollectPromise = collectStream(flightStream);
-  flightPipeable.pipe(flightStream);
-  const flightBuffer = await flightCollectPromise;
-  const flightReadable = new Readable({
-    read() {
-      this.push(flightBuffer);
-      this.push(null);
-    },
-  });
-  const ssrManifest = {
-    moduleMap: ssrModuleMap,
-    moduleLoading: {prefix: '/'},
-    serverModuleMap: null,
-  };
-  const flightResponse = FlightClient.createFromNodeStream(
-    flightReadable,
-    ssrManifest
-  );
-
-  // Now measure only Fizz
-  function ClientRoot() {
-    return React.use(flightResponse);
-  }
-  const fizzStart = performance.now();
-  const htmlStream = new PassThrough();
-  const htmlCollectPromise = collectStream(htmlStream);
-  await new Promise((resolve, reject) => {
-    const pipeable = ReactDOMServer.renderToPipeableStream(
-      React.createElement(ClientRoot),
-      {
-        onShellReady() {
-          pipeable.pipe(htmlStream);
-        },
-        onAllReady() {
-          resolve();
-        },
-        onShellError: reject,
-        onError: reject,
-      }
-    );
-  });
-  htmlStream.end();
-  const htmlBuffer = await htmlCollectPromise;
-  result.fizzRenderMs = performance.now() - fizzStart;
-  result.htmlOutputBytes = htmlBuffer.length;
-  return result;
-}
-
-// ---------------------------------------------------------------------------
 // Benchmark runner
 // ---------------------------------------------------------------------------
 
 const WARMUP_RUNS = 3;
-const MEASURED_RUNS = 20;
+const MEASURED_RUNS = 15;
 
 async function benchmarkScenario(scenarioBuilder) {
   const scenario = scenarioBuilder();
 
-  console.log(`\n${'='.repeat(70)}`);
+  console.log(`\n${'='.repeat(72)}`);
   console.log(`Scenario: ${scenario.name}`);
   console.log(`Description: ${scenario.description}`);
-  console.log(`Components: ~${scenario.componentCount}`);
-  console.log('='.repeat(70));
+  console.log('='.repeat(72));
 
   console.log(`  Warming up (${WARMUP_RUNS} runs)...`);
   for (let i = 0; i < WARMUP_RUNS; i++) {
@@ -317,119 +168,124 @@ async function benchmarkScenario(scenarioBuilder) {
     await runFullPipeline(s);
   }
 
-  console.log(`  Measuring (${MEASURED_RUNS} runs)...`);
+  console.log(`  Measuring full pipeline (${MEASURED_RUNS} runs)...`);
   const fullResults = [];
-  const fizzOnlyResults = [];
-
   for (let i = 0; i < MEASURED_RUNS; i++) {
     const s = scenarioBuilder();
     fullResults.push(await runFullPipeline(s));
   }
+
+  console.log(`  Measuring isolated phases (${MEASURED_RUNS} runs)...`);
+  const isoResults = [];
   for (let i = 0; i < MEASURED_RUNS; i++) {
     const s = scenarioBuilder();
-    fizzOnlyResults.push(await runFizzOnlyPipeline(s));
+    isoResults.push(await runIsolatedPhases(s));
   }
 
-  const agg = {
-    flightSerialize: {
-      median: median(fullResults.map(r => r.flightSerializeMs)),
-      mean: mean(fullResults.map(r => r.flightSerializeMs)),
-      stdev: stdev(fullResults.map(r => r.flightSerializeMs)),
-    },
-    flightDeserialize: {
-      median: median(fullResults.map(r => r.flightDeserializeMs)),
-      mean: mean(fullResults.map(r => r.flightDeserializeMs)),
-      stdev: stdev(fullResults.map(r => r.flightDeserializeMs)),
-    },
-    fizzRender: {
-      median: median(fullResults.map(r => r.fizzRenderMs)),
-      mean: mean(fullResults.map(r => r.fizzRenderMs)),
-      stdev: stdev(fullResults.map(r => r.fizzRenderMs)),
-    },
-    total: {
-      median: median(fullResults.map(r => r.totalMs)),
-      mean: mean(fullResults.map(r => r.totalMs)),
-      stdev: stdev(fullResults.map(r => r.totalMs)),
-    },
+  // Aggregate
+  const field = (arr, key) => ({
+    median: median(arr.map(r => r[key])),
+    mean: mean(arr.map(r => r[key])),
+    stdev: stdev(arr.map(r => r[key])),
+  });
+
+  const full = {
+    flightSerialize: field(fullResults, 'flightSerializeMs'),
+    flightDeserialize: field(fullResults, 'flightDeserializeMs'),
+    fizzRender: field(fullResults, 'fizzRenderMs'),
+    total: field(fullResults, 'totalMs'),
+    totalTTFB: field(fullResults, 'totalTTFB'),
     flightPayloadBytes: median(fullResults.map(r => r.flightPayloadBytes)),
     htmlOutputBytes: median(fullResults.map(r => r.htmlOutputBytes)),
-    totalBytes: median(fullResults.map(r => r.totalBytes)),
     memDelta: median(fullResults.map(r => r.memDelta)),
   };
 
-  const aggFizzOnly = {
-    fizzRender: {
-      median: median(fizzOnlyResults.map(r => r.fizzRenderMs)),
-    },
+  const iso = {
+    flightTotal: field(isoResults, 'flightTotalMs'),
+    fizzOnly: field(isoResults, 'fizzOnlyMs'),
   };
 
-  const flightOverheadMs =
-    agg.flightSerialize.median + agg.flightDeserialize.median;
-  const flightOverheadPct = (flightOverheadMs / agg.total.median) * 100;
-  const fizzOnlyPct = (agg.fizzRender.median / agg.total.median) * 100;
+  // Serialization overhead = total - (data fetch time) - (pure Fizz cost)
+  const serializationOverheadMs =
+    full.total.median - (iso.flightTotal.median + iso.fizzOnly.median);
+  const serializationOverheadPct =
+    (Math.max(0, serializationOverheadMs) / full.total.median) * 100;
 
+  // Print results
+  console.log('\n  --- Full Pipeline (median of %d runs) ---', MEASURED_RUNS);
   console.log(
-    '\n  --- Timing Breakdown (median of %d runs) ---',
-    MEASURED_RUNS
+    '  Flight serialize (incl data fetch): %s (±%s)',
+    formatMs(full.flightSerialize.median),
+    formatMs(full.flightSerialize.stdev)
   );
   console.log(
-    '  Flight serialize:     %s (±%s)',
-    formatMs(agg.flightSerialize.median),
-    formatMs(agg.flightSerialize.stdev)
+    '  Flight deserialize:                 %s (±%s)',
+    formatMs(full.flightDeserialize.median),
+    formatMs(full.flightDeserialize.stdev)
   );
   console.log(
-    '  Flight deserialize:   %s (±%s)',
-    formatMs(agg.flightDeserialize.median),
-    formatMs(agg.flightDeserialize.stdev)
+    '  Fizz render (after deser):          %s (±%s)',
+    formatMs(full.fizzRender.median),
+    formatMs(full.fizzRender.stdev)
   );
   console.log(
-    '  Fizz render:          %s (±%s)',
-    formatMs(agg.fizzRender.median),
-    formatMs(agg.fizzRender.stdev)
+    '  End-to-end total:                   %s (±%s)',
+    formatMs(full.total.median),
+    formatMs(full.total.stdev)
   );
   console.log(
-    '  Total:                %s (±%s)',
-    formatMs(agg.total.median),
-    formatMs(agg.total.stdev)
+    '  End-to-end TTFB:                    %s',
+    formatMs(full.totalTTFB.median)
+  );
+
+  console.log('\n  --- Isolated Phases ---');
+  console.log(
+    '  Flight total (data fetch + ser):    %s (±%s)',
+    formatMs(iso.flightTotal.median),
+    formatMs(iso.flightTotal.stdev)
   );
   console.log(
-    '  Fizz-only (no Flight):%s',
-    formatMs(aggFizzOnly.fizzRender.median)
+    '  Fizz-only (pre-resolved, no fetch): %s (±%s)',
+    formatMs(iso.fizzOnly.median),
+    formatMs(iso.fizzOnly.stdev)
   );
-  console.log('\n  --- Overhead Analysis ---');
+
+  console.log('\n  --- Overhead That Fusion Eliminates ---');
   console.log(
-    '  Flight overhead:      %s (%s%% of total)',
-    formatMs(flightOverheadMs),
-    flightOverheadPct.toFixed(1)
+    '  Serialization overhead:   %s (%s%% of total)',
+    formatMs(Math.max(0, serializationOverheadMs)),
+    Math.max(0, serializationOverheadPct).toFixed(1)
   );
-  console.log('  Fizz render:          %s%% of total', fizzOnlyPct.toFixed(1));
   console.log(
-    '  Max fusion win:       %s (eliminating Flight entirely)',
-    formatMs(flightOverheadMs)
+    '  Flight deserialize alone: %s',
+    formatMs(full.flightDeserialize.median)
   );
+  console.log(
+    '  Formula: total(%s) - flightWithFetch(%s) - fizzOnly(%s)',
+    formatMs(full.total.median),
+    formatMs(iso.flightTotal.median),
+    formatMs(iso.fizzOnly.median)
+  );
+
   console.log('\n  --- Payload Sizes ---');
   console.log(
-    '  Flight wire format:   %s',
-    formatBytes(agg.flightPayloadBytes)
+    '  Flight wire format:    %s (eliminated by fusion)',
+    formatBytes(full.flightPayloadBytes)
   );
-  console.log('  HTML output:          %s', formatBytes(agg.htmlOutputBytes));
-  console.log('  Total output:         %s', formatBytes(agg.totalBytes));
-  console.log(
-    "  Intermediate bloat:   %s (Flight payload that wouldn't exist in fused)",
-    formatBytes(agg.flightPayloadBytes)
-  );
+  console.log('  HTML output:           %s', formatBytes(full.htmlOutputBytes));
+
   console.log('\n  --- Memory ---');
   console.log(
-    '  Heap delta (median):  %s',
-    formatBytes(Math.abs(agg.memDelta))
+    '  Heap delta (median):   %s',
+    formatBytes(Math.abs(full.memDelta))
   );
 
   return {
     scenario: scenario.name,
-    ...agg,
-    fizzOnly: aggFizzOnly,
-    flightOverheadMs,
-    flightOverheadPct,
+    full,
+    iso,
+    serializationOverheadMs: Math.max(0, serializationOverheadMs),
+    serializationOverheadPct: Math.max(0, serializationOverheadPct),
   };
 }
 
@@ -439,26 +295,25 @@ async function benchmarkScenario(scenarioBuilder) {
 
 async function main() {
   console.log(
-    '╔══════════════════════════════════════════════════════════════════════╗'
+    '╔════════════════════════════════════════════════════════════════════════╗'
   );
   console.log(
-    '║       Fused Renderer Performance Validation Benchmark              ║'
+    '║  Fused Renderer Performance Validation (v2 — realistic scenarios)   ║'
   );
   console.log(
-    '║       Measuring Flight→Fizz pipeline overhead                      ║'
+    '║  Async server components · Suspense · Real prop sizes               ║'
   );
   console.log(
-    '╚══════════════════════════════════════════════════════════════════════╝'
+    '╚════════════════════════════════════════════════════════════════════════╝'
   );
   console.log('');
   console.log('Node.js:', process.version);
-  console.log('Warmup runs:', WARMUP_RUNS);
-  console.log('Measured runs:', MEASURED_RUNS);
+  console.log('Warmup:', WARMUP_RUNS, '· Measured:', MEASURED_RUNS);
   console.log(
-    'GC exposed:',
+    'GC:',
     typeof global.gc === 'function'
-      ? 'yes'
-      : 'no (use --expose-gc for memory data)'
+      ? 'exposed'
+      : 'not exposed (use --expose-gc)'
   );
 
   const {createScenarios} = require('./fused-renderer-scenarios');
@@ -467,61 +322,64 @@ async function main() {
 
   for (const builder of scenarios) {
     try {
-      const result = await benchmarkScenario(builder);
-      allResults.push(result);
+      allResults.push(await benchmarkScenario(builder));
     } catch (err) {
-      console.error(`  ERROR in scenario: ${err.message}`);
-      console.error(err.stack);
+      console.error(`  ERROR: ${err.message}\n${err.stack}`);
     }
   }
 
   // Summary table
-  console.log('\n\n');
+  console.log('\n');
   console.log(
-    '╔══════════════════════════════════════════════════════════════════════╗'
+    '╔════════════════════════════════════════════════════════════════════════╗'
   );
   console.log(
-    '║                          SUMMARY TABLE                             ║'
+    '║                          SUMMARY TABLE                              ║'
   );
   console.log(
-    '╚══════════════════════════════════════════════════════════════════════╝'
+    '╚════════════════════════════════════════════════════════════════════════╝'
   );
   console.log('');
-
-  const header =
-    'Scenario        | Flight Ser | Flight Des | Fizz Render | Total     | Flight % | Wire KB  | HTML KB';
-  const sep =
-    '----------------|------------|------------|-------------|-----------|----------|----------|--------';
-  console.log(header);
-  console.log(sep);
-
+  console.log(
+    'Scenario        | Total     | Fetch+Ser  | Fizz Only | Ser Ovrhd  | Ovrhd %  | Wire      | HTML'
+  );
+  console.log(
+    '----------------|-----------|------------|-----------|------------|----------|-----------|----------'
+  );
   for (const r of allResults) {
     const name = r.scenario.padEnd(15);
-    const fSer = formatMs(r.flightSerialize.median).padStart(10);
-    const fDes = formatMs(r.flightDeserialize.median).padStart(10);
-    const fizz = formatMs(r.fizzRender.median).padStart(11);
-    const total = formatMs(r.total.median).padStart(9);
-    const pct = (r.flightOverheadPct.toFixed(1) + '%').padStart(8);
-    const wire = formatBytes(r.flightPayloadBytes).padStart(8);
-    const html = formatBytes(r.htmlOutputBytes).padStart(7);
+    const total = formatMs(r.full.total.median).padStart(9);
+    const fetchSer = formatMs(r.iso.flightTotal.median).padStart(10);
+    const fizzOnly = formatMs(r.iso.fizzOnly.median).padStart(9);
+    const overhead = formatMs(r.serializationOverheadMs).padStart(10);
+    const pct = (r.serializationOverheadPct.toFixed(1) + '%').padStart(8);
+    const wire = formatBytes(r.full.flightPayloadBytes).padStart(9);
+    const html = formatBytes(r.full.htmlOutputBytes).padStart(9);
     console.log(
-      `${name} | ${fSer} | ${fDes} | ${fizz} | ${total} | ${pct} | ${wire} | ${html}`
+      `${name} | ${total} | ${fetchSer} | ${fizzOnly} | ${overhead} | ${pct} | ${wire} | ${html}`
     );
   }
-
   console.log('');
-  console.log('Flight % = (Flight serialize + Flight deserialize) / Total');
+  console.log('Total      = end-to-end (Flight serialize + deser + Fizz)');
   console.log(
-    'This is the maximum possible improvement from fusing renderers.'
+    'Fetch+Ser  = Flight total (server component execution + serialization)'
+  );
+  console.log(
+    'Fizz Only  = Fizz rendering pre-resolved tree (no fetch, no Flight)'
+  );
+  console.log(
+    'Ser Ovrhd  = Total - Fetch+Ser - Fizz Only = pure serialization overhead'
+  );
+  console.log(
+    'Ovrhd %    = what fusion actually eliminates (data fetch time excluded)'
   );
 
   const jsonPath = path.join(__dirname, 'fused-renderer-bench-results.json');
-  const fs = require('fs');
-  fs.writeFileSync(jsonPath, JSON.stringify(allResults, null, 2));
-  console.log(`\nRaw results written to: ${jsonPath}`);
+  require('fs').writeFileSync(jsonPath, JSON.stringify(allResults, null, 2));
+  console.log(`\nRaw results: ${jsonPath}`);
 }
 
 main().catch(err => {
-  console.error('Fatal error:', err);
+  console.error('Fatal:', err);
   process.exit(1);
 });

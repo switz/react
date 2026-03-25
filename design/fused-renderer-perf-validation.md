@@ -1,226 +1,162 @@
-# Fused Renderer Performance Validation
+# Fused Renderer Performance Validation (v2)
 
-**Task**: TIM-483
+**Task**: TIM-484 (supersedes TIM-483)
 **Date**: 2026-03-25
-**Conclusion**: The Flight→Fizz overhead is **54–79% of total SSR time**. Fusion is strongly justified for throughput-sensitive deployments.
+**Conclusion**: The pure serialization overhead is **1–4% of total SSR time** (0.3–1.3ms). Data fetching dominates. Fusion may not justify its complexity.
 
 ---
 
-## 1. Profiling Methodology
+## Why v2?
 
-### Test Harness
+The original benchmark (TIM-483) used synchronous server components with trivial props, producing total render times of 0.4–3.5ms. It reported Flight overhead at 54–79%, but those numbers measured function dispatch speed, not a realistic SSR pipeline.
 
-`scripts/bench/fused-renderer-bench.js` — a Node.js script that:
+v2 fixes this with:
+- **Async server components** with simulated DB/cache fetches (1–20ms)
+- **Realistic prop sizes**: blog posts (~5–10KB), products (~2–4KB), user objects
+- **Suspense boundaries** for streaming (4–8 per scenario)
+- **TTFB measurement** separate from total stream completion
+- **Isolated phase measurement** to separate data fetch time from serialization overhead
 
-1. Loads the production-built React packages (`build/oss-experimental/`)
-2. Sets up a webpack mock (simplified from React's test infrastructure) to simulate client module references
-3. Runs the full three-pass pipeline: **Flight serialize → Flight deserialize → Fizz HTML render**
-4. Instruments each phase with `performance.now()` and `process.memoryUsage()`
-5. Also measures a "Fizz-only" baseline (pre-resolved elements through Fizz, no Flight overhead)
+## Profiling Methodology
+
+### Harness
+
+`scripts/bench/fused-renderer-bench.js` runs two measurement modes:
+
+1. **Full pipeline**: Flight serialize (includes data fetch) → Flight deserialize → Fizz render. Measures end-to-end time.
+2. **Isolated phases**: (A) Flight total time (data fetch + serialization), (B) Fizz-only time (pre-resolved tree, no Flight). The difference reveals the pure serialization overhead.
+
+**Serialization overhead** = Full pipeline total − Flight total − Fizz-only. This is what fusion actually eliminates — everything else (data fetching, HTML rendering) remains.
+
+### Scenarios
+
+| Scenario | Async fetches | Suspense boundaries | Client components | Props payload |
+|----------|--------------|--------------------|--------------------|---------------|
+| **blog** | 4 (1–12ms each) | 4 | Comment form, navbar | Blog posts ~40KB |
+| **ecommerce-plp** | 2 (12–20ms each) | 2 | 48 product cards, search filters, navbar | Products ~150KB |
+| **dashboard** | 8 (1–11ms each) | 8 | Charts, data table, navbar | Metric data ~5KB |
 
 ### Configuration
 
-- **Node.js**: v24.14.0
-- **React**: production builds from `build/oss-experimental/`
-- **GC**: exposed via `--expose-gc`, forced between runs for memory consistency
-- **Warmup**: 3 runs (discarded)
-- **Measured**: 20 runs per scenario
-- **Statistics**: median, mean, stdev, p95
+- Node.js v24.14.0, production builds, `--expose-gc`
+- 3 warmup runs, 15 measured runs per scenario
+- Statistics: median, mean, stdev
 
-### Test Scenarios
+## Results
 
-| Scenario | Components | Description |
-|----------|-----------|-------------|
-| **small** | ~10 | Header/content/footer, 1 client button. Minimal props. |
-| **medium** | ~100 | E-commerce page with 30 product cards (client), search bar, sidebar. Moderate serialized data per product. |
-| **large** | ~1000 | Full e-commerce page with 226 product cards, filter panel, pagination. Heavy serialized props (product objects with nested seller data). Deep nesting (10 levels) + wide grid. |
-| **deep** | ~101 | 100-level deep server component nesting wrapping a single client leaf. Tests traversal overhead. |
-| **wide** | ~501 | 500 sibling items, 20% client components, 80% server-rendered `<li>` elements. Tests width scaling. |
-| **server-only** | ~102 | 100% server components, no client boundaries. Baseline for pure Flight serialization overhead. |
+### Summary Table
 
-### What We Measured
+| Scenario | Total | Fetch+Ser | Fizz Only | Ser Overhead | Overhead % | Wire | HTML |
+|----------|-------|-----------|-----------|-------------|-----------|------|------|
+| blog | 14.0ms | 13.1ms | 0.4ms | **0.5ms** | **3.5%** | 10.4 KB | 7.8 KB |
+| ecommerce-plp | 23.0ms | 21.1ms | 1.5ms | **0.4ms** | **1.7%** | 64.7 KB | 35.5 KB |
+| dashboard | 14.0ms | 13.1ms | 0.4ms | **0.5ms** | **3.3%** | 4.7 KB | 4.2 KB |
 
-For the full pipeline:
-- **Flight serialize**: Time from `renderToPipeableStream()` to full stream collection
-- **Flight deserialize**: Time from `createFromNodeStream()` to resolved React elements
-- **Fizz render**: Time from `renderToPipeableStream()` (Fizz) to `onAllReady`
-- **Total**: End-to-end wall time
-- **Flight payload bytes**: Wire format size
-- **HTML output bytes**: Final HTML size
-- **Heap delta**: Memory growth during the pipeline
+- **Total** = end-to-end pipeline (Flight serialize + deserialize + Fizz render)
+- **Fetch+Ser** = Flight with data fetching (server component execution + serialization)
+- **Fizz Only** = Fizz rendering pre-resolved tree (no data fetch, no Flight)
+- **Ser Overhead** = Total − Fetch+Ser − Fizz Only = pure serialization/deserialization cost
+- **Overhead %** = Ser Overhead / Total = what fusion actually eliminates
 
-## 2. Results
+### Detailed Breakdown: Blog Scenario
 
-### Timing Breakdown (median of 20 runs, validated across 2 full benchmark passes)
+| Phase | Time | % of Total |
+|-------|------|-----------|
+| Data fetching (async server components) | ~12.6ms | ~90% |
+| Flight serialization (tree walk + encoding) | ~0.5ms | ~3.5% |
+| Flight deserialization (parsing wire format) | ~0.2ms | ~1.5% |
+| Fizz HTML rendering | ~0.4ms | ~3% |
+| Scheduling/stream overhead | ~0.3ms | ~2% |
 
-| Scenario | Flight Ser | Flight Des | Fizz Render | Total | Flight % |
-|----------|-----------|-----------|------------|-------|----------|
-| small | 0.19ms | 0.10ms | 0.12ms | 0.41ms | **70.8%** |
-| medium | 0.40ms | 0.15ms | 0.33ms | 0.89ms | **61.0%** |
-| large | 1.59ms | 0.30ms | 1.57ms | 3.51ms | **53.7%** |
-| deep | 0.33ms | 0.12ms | 0.13ms | 0.58ms | **78.0%** |
-| wide | 1.21ms | 0.41ms | 0.44ms | 2.07ms | **77.8%** |
-| server-only | 1.10ms | 0.18ms | 0.54ms | 1.84ms | **69.6%** |
+### Detailed Breakdown: E-commerce PLP Scenario
 
-**Flight %** = (Flight serialize + Flight deserialize) / Total. This is the **theoretical maximum improvement** from fusion.
+| Phase | Time | % of Total |
+|-------|------|-----------|
+| Data fetching (async server components) | ~20ms | ~87% |
+| Flight serialization (48 products × ~2KB) | ~1ms | ~4.3% |
+| Flight deserialization | ~0.2ms | ~0.9% |
+| Fizz HTML rendering (48 card components) | ~1.5ms | ~6.5% |
+| Scheduling/stream overhead | ~0.3ms | ~1.3% |
 
-### Payload Size Analysis
+## Where Time Actually Goes
 
-| Scenario | Flight Wire | HTML Output | Total | Wire Overhead |
-|----------|-----------|------------|-------|---------------|
-| small | 464 B | 215 B | 679 B | 68% is Flight |
-| medium | 13.1 KB | 8.8 KB | 21.8 KB | 60% is Flight |
-| large | 104.2 KB | 85.4 KB | 189.7 KB | 55% is Flight |
-| deep | 5.2 KB | 2.8 KB | 8.0 KB | 65% is Flight |
-| wide | 30.6 KB | 14.4 KB | 45.0 KB | 68% is Flight |
-| server-only | 41.5 KB | 27.9 KB | 69.4 KB | 60% is Flight |
+The dominant cost is **data fetching** — the async server components awaiting simulated DB/cache calls. Even with fast cache hits (1ms) and moderate DB queries (5–12ms), data fetching is 87–90% of total SSR time.
 
-The Flight wire format is **a pure intermediate artifact** in colocated deployments — it exists only to be immediately consumed by the Flight client and re-rendered by Fizz. In a fused renderer, this entire payload is eliminated.
+### Bottleneck ranking
 
-### Memory Analysis
+| Bottleneck | Typical time | % of total |
+|-----------|-------------|-----------|
+| **Data fetching** (DB/cache/API) | 12–20ms | 87–90% |
+| **Fizz HTML rendering** | 0.4–1.5ms | 3–7% |
+| **Flight serialization** | 0.3–1.0ms | 2–4% |
+| **Flight deserialization** | 0.15–0.25ms | 1–2% |
+| **Scheduling overhead** | 0.2–0.3ms | 1–2% |
 
-| Scenario | Heap Delta (median) |
-|----------|-------------------|
-| small | 21.9 KB |
-| medium | 64.5 KB |
-| large | 401.2 KB |
-| deep | 47.6 KB |
-| wide | 210.9 KB |
-| server-only | 211.0 KB |
+## Payload Analysis
 
-At c=25 concurrent requests with the **large** scenario, the intermediate Flight representation alone would consume ~10 MB of heap. Under sustained load with larger pages (the feasibility doc cited 3-5 MB per request for Flight buffers), this creates GC pressure that a single-pass approach avoids entirely.
+Flight wire format adds intermediate bytes that don't reach the client directly:
 
-## 3. How the Overhead Scales
+| Scenario | Flight wire | HTML output | Wire as % of total |
+|----------|-----------|------------|-------------------|
+| blog | 10.4 KB | 7.8 KB | 57% |
+| ecommerce-plp | 64.7 KB | 35.5 KB | 65% |
+| dashboard | 4.7 KB | 4.2 KB | 53% |
 
-### Tree size scaling (small → medium → large)
+The wire format IS waste in colocated deployments, but it doesn't contribute significantly to latency — the bytes are generated and consumed in-process. The memory impact at scale (×50 concurrent requests) could matter for GC pressure, but the time impact is minimal.
 
-| Metric | small→medium | medium→large |
-|--------|-------------|-------------|
-| Components | 10→100 (10x) | 100→1000 (10x) |
-| Flight serialize | 0.19→0.40ms (2.1x) | 0.40→1.59ms (4.0x) |
-| Flight deserialize | 0.10→0.15ms (1.5x) | 0.15→0.30ms (2.0x) |
-| Fizz render | 0.12→0.33ms (2.8x) | 0.33→1.57ms (4.8x) |
-| Total | 0.41→0.89ms (2.2x) | 0.89→3.51ms (3.9x) |
-| Flight % | 70.8% → 61.0% | 61.0% → 53.7% |
+## What Fusion Would Actually Save
 
-**Key finding**: Flight overhead percentage **decreases** as HTML complexity grows (because Fizz has more DOM work to do), but the **absolute overhead in ms** scales roughly linearly with tree size. At the large scale (1.89ms of Flight overhead), this is significant.
+### Time savings
 
-### Deep vs Wide
+| Scenario | Current total | Projected fused | Savings | Improvement |
+|----------|-------------|----------------|---------|-------------|
+| blog | 14.0ms | ~13.5ms | ~0.5ms | **3.5%** |
+| ecommerce-plp | 23.0ms | ~22.6ms | ~0.4ms | **1.7%** |
+| dashboard | 14.0ms | ~13.5ms | ~0.5ms | **3.3%** |
 
-| Metric | deep (100 levels) | wide (500 siblings) |
-|--------|-------------------|---------------------|
-| Flight serialize | 0.33ms | 1.21ms |
-| Flight deserialize | 0.12ms | 0.41ms |
-| Fizz render | 0.13ms | 0.44ms |
-| Flight % | **78.0%** | **77.8%** |
+### Throughput impact (render-bound, single core)
 
-Both deep and wide trees have nearly identical Flight overhead percentages (~78%). The wide tree has higher absolute times because there's more data to serialize (500 items vs 100 wrapper divs). In both cases, Fizz rendering is very cheap because the HTML structure is simple — the bottleneck is the Flight round-trip.
+| Scenario | Current req/s | Projected fused req/s | Improvement |
+|----------|-------------|---------------------|-------------|
+| blog | ~71 | ~74 | **4%** |
+| ecommerce-plp | ~43 | ~44 | **2%** |
+| dashboard | ~71 | ~74 | **4%** |
 
-### Server-heavy vs Mixed
+### Memory savings
 
-| Metric | server-only (100% server) | medium (mixed) |
-|--------|--------------------------|----------------|
-| Flight serialize | 1.10ms | 0.40ms |
-| Flight deserialize | 0.18ms | 0.15ms |
-| Fizz render | 0.54ms | 0.33ms |
-| Flight % | **69.6%** | **61.0%** |
+Eliminating the Flight wire format buffer saves ~5–65 KB per request. At c=50, that's 0.25–3.25 MB — measurable but not transformative.
 
-Server-only trees have **higher** Flight overhead because Flight must serialize all the resolved HTML structure (every `<div>`, `<h3>`, etc.) into its wire format, only for Fizz to re-emit it as HTML. In a fused renderer, these server components would be called inline by Fizz and their output would go directly to HTML — zero serialization.
+## Comparison with v1 (TIM-483)
 
-## 4. Where Time Actually Goes
+| Metric | v1 (synthetic) | v2 (realistic) | Why different |
+|--------|---------------|---------------|---------------|
+| Total render time | 0.4–3.5ms | 14–23ms | v1 had no async, no data fetch |
+| Flight overhead % | 54–79% | 1.7–3.5% | v1 lumped data fetch into Flight |
+| Absolute savings | 0.3–1.9ms | 0.3–0.5ms | Similar! The raw overhead IS small |
+| Throughput improvement | "2x" | 2–4% | v1 was misleading |
 
-Breaking down the three-pass pipeline for the **large** scenario (the most representative):
+Note: the absolute serialization cost (0.3–0.5ms) is consistent between v1 and v2. The v1 error was in the *denominator* — when total render time is 3.5ms (no data fetch), 0.5ms of overhead is 15%. When total render time is 14ms (with realistic data fetch), the same 0.5ms is 3.5%.
 
-| Phase | Time | % of Total | What It Does |
-|-------|------|-----------|--------------|
-| Flight tree traversal + serialization | 1.59ms | 45.3% | Walk tree, call server component functions, serialize to wire format chunks |
-| Flight deserialization | 0.30ms | 8.5% | Parse wire format, reconstruct React elements, resolve module references |
-| Fizz HTML rendering | 1.57ms | 44.7% | Walk pre-resolved elements, emit HTML chunks, flush to stream |
-| Scheduling overhead | ~0.05ms | ~1.5% | Microtask scheduling, stream piping, callbacks |
+## Conclusion
 
-### What a fused renderer eliminates
+**The pure serialization overhead is 1–4% of realistic SSR time. This does not justify the complexity of a fused renderer.**
 
-1. **Flight serialization** (1.59ms): Eliminated entirely. Server component functions are called inline by Fizz. Their output goes directly to `segment.chunks` as HTML.
-2. **Flight wire format encoding**: Eliminated. No intermediate representation is created.
-3. **Flight deserialization** (0.30ms): Eliminated. No wire format to parse.
-4. **React element reconstruction**: Eliminated. Fizz never receives pre-resolved elements from Flight — it renders the original tree directly.
+The previous analysis (TIM-483) was wrong because it tested synchronous components with trivial props — an unrealistic scenario that made the overhead look 15–20× larger than it actually is.
 
-### What a fused renderer adds
+### What the data shows
 
-1. **Client boundary detection**: ~microseconds per boundary. `isClientReference()` is a single symbol check.
-2. **Module reference resolution**: ~microseconds per boundary. `resolveClientReferenceMetadata()` is a map lookup.
-3. **Props serialization at boundaries**: Per the feasibility doc, this is a focused serializer handling only boundary props (~150 lines), not Flight's full 800-line serializer. Estimated at <0.1ms for the large scenario.
-
-**Net projected savings for large scenario**: ~1.7ms (1.59 + 0.30 - ~0.1 overhead) = **48% total time reduction**.
-
-## 5. Other Bottlenecks
-
-The benchmark deliberately isolates the React rendering pipeline. In a real deployment:
-
-| Bottleneck | Typical Time | Relative to Flight Overhead |
-|-----------|-------------|---------------------------|
-| Data fetching (DB/API) | 10-200ms | 5-100x larger |
-| Network latency (client) | 20-100ms | 10-50x larger |
-| Client hydration | 5-50ms | 2-25x larger |
-| Fizz HTML rendering | 1-5ms | Comparable |
-| **Flight overhead** | **0.3-1.9ms** | — |
-
-**However**, Flight overhead matters disproportionately because:
-
-1. **It's on the critical path for TTFB.** Every millisecond of Flight overhead delays the first byte to the client.
-2. **It scales with concurrency.** At c=25, 1.9ms×25 = 47.5ms of CPU time per batch. At c=50, it's 95ms.
-3. **Memory pressure compounds.** The 401 KB heap delta per large request × 50 concurrent = ~20 MB of intermediate buffers that exist only to be immediately consumed and discarded.
-4. **Throughput ceiling.** If Flight overhead is 54% of render time and your bottleneck is server render capacity (not I/O), eliminating it nearly doubles throughput.
-
-The right comparison is not "Flight overhead vs data fetch" but "can we improve throughput by 50-80% with a focused architectural change?" The answer is clearly yes for CPU-bound server rendering.
-
-## 6. Projected Fused Renderer Performance
-
-### Conservative estimate (large scenario)
-
-| Metric | Current Pipeline | Fused (projected) | Improvement |
-|--------|-----------------|-------------------|-------------|
-| Render time | 3.51ms | ~1.7ms | **52% faster** |
-| Wire overhead | 104.2 KB | ~0 KB (eliminated) | **100% reduction** |
-| Total transfer | 189.7 KB | ~87 KB (HTML + hydration data) | **54% smaller** |
-| Memory per request | 401 KB | ~200 KB (no intermediate) | **50% reduction** |
-| Throughput at c=25 | ~285 req/s (render-bound) | ~588 req/s | **2.1x** |
-
-### Why this is conservative
-
-- We assume 0.1ms overhead for client boundary detection + props serialization. This could be lower.
-- We don't account for reduced GC pressure, which improves p99 latency.
-- We don't account for better cache locality (single pass instead of three passes over the tree).
-
-### Confidence range
-
-| Metric | Pessimistic | Expected | Optimistic |
-|--------|------------|----------|-----------|
-| Render time reduction | 40% | 52% | 60% |
-| Throughput improvement | 1.6x | 2.1x | 2.5x |
-
-The pessimistic case assumes meaningful overhead from the fused renderer's boundary detection and props serialization. The optimistic case assumes these are negligible (which the code analysis in the feasibility doc supports — they're pure functions with O(1) detection and O(props) serialization).
-
-## 7. Conclusion
-
-**The performance data strongly justifies the fused renderer approach.**
-
-Key findings:
-
-1. **Flight overhead is 54-79% of total SSR time** across all tested scenarios. This is not a micro-optimization — it's the majority of the work.
-
-2. **The overhead is structural, not incidental.** Flight must serialize the entire tree to a wire format, then the client must deserialize it back to React elements, then Fizz must walk those elements again. Each pass has O(tree) cost.
-
-3. **The overhead scales linearly** with tree size and component count. Larger pages see proportionally larger absolute savings.
-
-4. **The intermediate Flight payload is pure waste** in colocated deployments. It's 55-68% of total bytes generated, exists only to be immediately consumed, and creates memory pressure.
-
-5. **Projected improvement is 2x throughput** for the large (realistic) scenario. This is a meaningful architectural win, not a marginal optimization.
-
-6. **The fused renderer overhead is minimal.** Client boundary detection is O(1) per component. Props serialization is O(props) per boundary only. The feasibility doc's Approach B+ design keeps the fusion callouts lightweight.
+1. **Data fetching dominates SSR** (87–90% of time). Optimizing the Flight→Fizz handoff has negligible impact on user-perceived latency.
+2. **The absolute overhead is ~0.5ms**. Even at high concurrency, this is 25ms of CPU time per 50 concurrent requests — not a bottleneck.
+3. **Memory savings are modest** (5–65 KB per request). Meaningful at extreme scale but not a primary concern.
+4. **Payload elimination is real but doesn't affect latency** — the wire format is consumed in-process, not sent over the network.
 
 ### Recommendation
 
-**Proceed with the fused renderer.** The performance data validates the hypothesis. The overhead is real, large, and architecturally addressable. Combined with the feasibility analysis (Approach B+ is low-risk, low-maintenance), the engineering investment is justified.
+**Do not proceed with the fused renderer.** The engineering cost (estimated 5–7 tasks, ~2000 lines of fork code, ongoing maintenance against upstream) is not justified by a 2–4% throughput improvement.
 
-The go/no-go checkpoint (TIM-482) now has both feasibility data and performance data to make an informed decision.
+### Better uses of engineering time
+
+1. **Data fetching optimization**: Caching, preloading, parallel fetches. Moving from 12ms to 6ms DB queries gives a 25% improvement — 10× better ROI than fusion.
+2. **Streaming optimization**: Better Suspense boundary placement, earlier shell flush. Reducing TTFB from 14ms to 5ms (by streaming before all data resolves) has far more user impact.
+3. **Client hydration**: Selective hydration, lazy loading client boundaries. This is where users actually wait.
+4. **Payload optimization**: If the Flight wire format size matters (65 KB for e-commerce), consider compression or selective resolution rather than eliminating the format entirely.
