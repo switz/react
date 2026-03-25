@@ -2992,11 +2992,32 @@ function renderClientBoundary(
     serializedProps = '{}';
   }
 
+  // Resolve the actual component module for SSR rendering.
+  // The `type` is a client reference proxy (function(){} with $$typeof/$$id)
+  // that doesn't contain the real component code. We need to resolve the
+  // actual module via the bundler config, similar to how the Flight client
+  // resolves modules via __webpack_require__.
+  //
+  // If bundlerConfig provides a resolveClientComponent function, use it.
+  // Otherwise fall back to the proxy (which may render nothing — this is
+  // the correct behavior if no SSR module resolution is configured).
+  let resolvedType = type;
+  const bundlerConfig = request.bundlerConfig;
+  if (
+    bundlerConfig != null &&
+    typeof bundlerConfig.resolveClientComponent === 'function'
+  ) {
+    const resolved = bundlerConfig.resolveClientComponent(type.$$id);
+    if (resolved != null) {
+      resolvedType = resolved;
+    }
+  }
+
   // Emit the opening boundary marker into the segment.
   pushStartClientBoundary(segment.chunks, boundaryId);
 
-  // Render the client component to HTML normally.
-  renderFunctionComponent(request, task, keyPath, type, props);
+  // Render the client component to HTML normally using the resolved module.
+  renderFunctionComponent(request, task, keyPath, resolvedType, props);
 
   // Emit the closing boundary marker.
   pushEndClientBoundary(segment.chunks);

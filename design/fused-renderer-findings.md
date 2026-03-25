@@ -2,33 +2,35 @@
 
 **Date**: 2026-03-25
 **Branch**: `fused-renderer`
-**Status**: Server-side implementation complete. 2.6–3.2x throughput improvement validated.
+**Status**: Server-side implementation complete. 1.6–2.0x throughput improvement verified.
 
 ---
 
 ## The Core Result
 
-Fused rendering — having Fizz call server component functions directly instead of going through Flight serialize → deserialize → re-traverse — delivers a **2.6–3.2x throughput improvement** for RSC SSR under concurrent load, with full props serialization for client hydration.
+Fused rendering — having Fizz call server component functions directly instead of going through Flight serialize → deserialize → re-traverse — delivers a **1.6–2.0x throughput improvement** under concurrent load, with identical HTML output, 4–5x less memory, and stable performance under pressure.
 
-### Concurrent throughput (226-product PLP, single Node.js thread)
+### Verified concurrent throughput (226-product PLP, single Node.js thread)
 
-| c | Full Pipeline | Fused (w/ client boundaries) | Improvement |
-|---|-------------|---------------------------|-------------|
-| 1 | 127 req/s | **330 req/s** | **2.6x** |
-| 10 | 106 req/s | **274 req/s** | **2.6x** |
-| 25 | 98 req/s | **292 req/s** | **3.0x** |
-| 50 | 89 req/s | **285 req/s** | **3.2x** |
+| c | Full Pipeline | Fused | Improvement | Heap |
+|---|-------------|-------|-------------|------|
+| 1 | 128 req/s | **200 req/s** | **1.6x** | 239→73 MB |
+| 10 | 108 req/s | **187 req/s** | **1.7x** | 277→70 MB |
+| 25 | 99 req/s | **187 req/s** | **1.9x** | 277→57 MB |
+| 50 | 93 req/s | **185 req/s** | **2.0x** | 297→60 MB |
 
-### Per-request breakdown (c=1)
+**Key property**: Fused throughput is **rock stable** (185–200 req/s regardless of concurrency) while the full pipeline **degrades under load** (128→93 req/s) due to GC pressure from intermediate Flight wire format buffers.
 
-| Mode | ms/req | req/s | Output | Heap |
-|------|--------|-------|--------|------|
-| renderToString (plain React) | 1.8ms | 547 | 121 KB | 42 MB |
-| Full Flight→Fizz pipeline | 7.5ms | 133 | 122 KB | 246 MB |
-| **Fused (server-only)** | **1.9ms** | **528** | **122 KB** | **73 MB** |
-| **Fused (w/ client boundaries)** | **3.2ms** | **309** | **348 KB** | **83 MB** |
+### Audit results
 
-Server-only fused matches `renderToString` performance (528 vs 547 req/s). With client boundaries, props serialization adds ~1.3ms — bringing total to 3.2ms, still 2.3x faster than the full pipeline's 7.5ms.
+All numbers verified by automated audit:
+- ✅ HTML output is byte-identical between full pipeline and fused (after stripping markers/scripts)
+- ✅ Client component functions are actually called (counted invocations)
+- ✅ All product names present in rendered HTML
+- ✅ Boundary markers and hydration data present
+- ✅ Module resolution uses O(1) Map lookup (same cost as `__webpack_require__`)
+- ✅ Same React build used for both paths
+- ✅ Node.js streams (`renderToPipeableStream`), not web streams
 
 ## What We Built
 
@@ -36,120 +38,93 @@ Server-only fused matches `renderToString` performance (528 vs 547 req/s). With 
 
 | PR | Task | What it does |
 |----|------|-------------|
-| #10 | TIM-474 | `fusedMode` + `bundlerConfig` on Fizz Request. Client reference detection via `Symbol.for('react.client.reference')` in `renderElement()`. Server components called inline via `renderFunctionComponent()`. |
-| #11 | TIM-475 | `renderClientBoundary()`: wraps client components in `<!--C:ID-->` / `<!--/C-->` markers, queues hydration data. `flushCompletedQueues()` emits consolidated `<script data-fused-hydration>` tag. |
-| #12 | TIM-476 | `ReactFizzHydrationSerializer.js`: focused props serializer (~150 lines). Handles primitives, objects, arrays, Dates, BigInt, NaN/Infinity, server actions, client refs. Tombstones children. |
-| #14 | TIM-486 | Fast-path serializer: uses native `JSON.stringify` for common case, falls back to manual string building for exotic types. |
-| #15 | TIM-478 | Integration tests proving fused SSR and Flight coexist. Per-request `fusedMode` gating. Sentinel test: Flight server has zero fused-mode code. |
-| #16 | TIM-480 | Edge case tests (nested boundaries, errors, async/sync mixing, streaming, exotic props, server actions) + upstream sentinel tests. |
-| #17 | TIM-487 | Consolidated hydration script + investigation of props overhead. Module ref deduplication. |
+| #10 | TIM-474 | `fusedMode` + `bundlerConfig` on Request. Client ref detection. Server components called inline. |
+| #11 | TIM-475 | `renderClientBoundary()`: markers, hydration data queue, consolidated `<script>`. |
+| #12 | TIM-476 | `ReactFizzHydrationSerializer.js`: focused props serializer (~150 lines). |
+| #14 | TIM-486 | Fast-path serializer using native `JSON.stringify`. |
+| #15 | TIM-478 | Flight coexistence tests. Sentinel: Flight server untouched. |
+| #16 | TIM-480 | Edge case tests + upstream assumption sentinels. |
 
 ### Architecture
 
 ```
 Framework request arrives
   ├── Initial SSR (fusedMode: true)
-  │   └── Fizz calls server components inline
-  │       ├── Server component → renderFunctionComponent() → HTML
-  │       └── Client component → renderClientBoundary()
-  │           ├── <!--C:ID--> marker
-  │           ├── renderFunctionComponent() → HTML (SSR preview)
-  │           ├── <!--/C--> marker
-  │           └── Queue {moduleRef, serializedProps}
-  │       └── flushCompletedQueues() → consolidated <script data-fused-hydration>
+  │   Fizz receives original tree with server component functions
+  │   ├── Server component → renderFunctionComponent() → HTML
+  │   └── Client component → renderClientBoundary()
+  │       ├── resolveClientComponent($$id) → actual module
+  │       ├── <!--C:ID--> marker
+  │       ├── renderFunctionComponent(resolvedModule, props) → HTML
+  │       ├── <!--/C--> marker
+  │       └── Queue {moduleRef, serializedProps}
+  │   └── flushCompletedQueues() → consolidated <script data-fused-hydration>
   │
   └── Client navigation (fusedMode: false, default)
-      └── Flight server → wire format → Flight client → Fizz → HTML
-          (completely unchanged, zero code modifications)
+      └── Flight server → wire format (completely unchanged)
 ```
 
-### Files modified
+### Key design decisions
 
-- `packages/react-server/src/ReactFizzServer.js` — fusedMode, renderClientBoundary, hydration data emission
-- `packages/react-dom-bindings/src/server/ReactFizzConfigDOM.js` — marker and script emission functions
-- `packages/react-server/src/ReactFizzHydrationSerializer.js` — new file, focused props serializer
-- `packages/react-dom/src/server/ReactDOMFizzServer{Node,Edge,Browser,Bun}.js` — `experimental_fusedMode` option
-- Fork files (legacy, markup, custom, noop) — re-exports for new functions
+1. **`resolveClientComponent` on bundlerConfig** — the framework provides a function that maps `$$id` to the actual server-side module. This is equivalent to `__webpack_require__` in the Flight client but runs inside Fizz. The proxy function itself returns `undefined` — you MUST resolve the real module.
 
-### Files NOT modified
+2. **Consolidated hydration script** — one `<script data-fused-hydration>` per flush instead of per-boundary. Deduplicates module refs. Format: `{"m":["moduleUrl"],"b":[[boundaryId,moduleIdx],...]}`
 
-- `packages/react-server/src/ReactFlightServer.js` — untouched
-- `packages/react-client/src/ReactFlightClient.js` — untouched
-- `packages/react-reconciler/` — untouched (no client-side hydration changes)
-- `packages/react-dom-bindings/src/client/` — untouched
+3. **Props serialized per-boundary** — `serializeProps()` handles common types via JSON.stringify fast path. ~1.3ms for 226 boundaries. This is irreducible work — the client needs props to hydrate.
 
-## What We Learned
+## Where the speedup comes from
 
-### 1. The Flight overhead is real and large
+Per-request breakdown (c=1, 226 products):
 
-The Flight serialize → deserialize → re-traverse cycle adds 2.3–3.2x overhead vs fused rendering. At c=25: 98 req/s (full pipeline) vs 292 req/s (fused). The gap widens under load because Flight's wire format buffers create GC pressure.
+| Phase | Full Pipeline | Fused | Saved |
+|-------|-------------|-------|-------|
+| Flight serialize (tree walk + wire format) | ~2.5ms | 0ms | 2.5ms |
+| Flight deserialize + element reconstruction | ~2.5ms | 0ms | 2.5ms |
+| Module resolution | via Flight client | ~0.003ms | — |
+| Component rendering (Fizz) | ~2.0ms | ~2.0ms | 0ms |
+| Props serialization | 0ms (in Flight wire) | ~1.3ms | -1.3ms |
+| Hydration script emission | 0ms | ~0.2ms | -0.2ms |
+| **Total** | **~7.0ms** | **~3.5ms** | **3.5ms** |
 
-### 2. The "Fizz-only ceiling" was misleading
+Net savings: ~3.5ms per request from eliminating Flight serialize + deserialize, offset by props serialization + hydration script costs. The props serialization is work that Flight was also doing (it serialized props in the wire format) — we're just doing it in a different location.
 
-Early benchmarks showed Fizz-only (pre-resolved by Flight) at ~500 req/s and assumed that was the ceiling. But apples-to-apples measurement shows Fizz-only at only **142 req/s** — nearly identical to the full pipeline (139 req/s). Flight client's element reconstruction is just as expensive as Flight's serialization. Fused mode bypasses both.
+## Measurement journey
 
-### 3. Props serialization is real work but not a blocker
+| Version | Claimed | Actual | Error |
+|---------|---------|--------|-------|
+| v1 (sync-only) | 54-79% overhead | CPU ratio was correct | No async/data fetch |
+| v2 (wall-clock + I/O) | 1-4% overhead | Irrelevant metric | I/O wait isn't CPU |
+| v3 (concurrent) | 3-6x drop | Measured the problem correctly | "Fizz ceiling" was wrong |
+| v4 (apples-to-apples) | 2.3-3.2x | **Client proxy bug** | Fused wasn't rendering components |
+| **v5 (audited)** | **1.6-2.0x** | **Verified identical HTML** | **Honest** |
 
-Each client boundary's props need to be serialized for hydration. For 226 products at ~1.2 KB each, this adds ~1.3ms per request. This is inherent — the client needs this data to hydrate. V8's `JSON.stringify` is already near-optimal; three different serialization strategies (recursive processObject, direct string building, JSON.stringify with replacer) all performed within 7% of each other.
+The proxy bug: `clientExports()` creates `function(){}` with `$$typeof` set. Calling this proxy returns `undefined`. The fused renderer was emitting empty markers, benchmarking "doing nothing" as faster. Fixed by adding `resolveClientComponent` to resolve the actual module via bundlerConfig.
 
-The 3.2ms total per request (1.9ms rendering + 1.3ms serialization) yields 309 req/s at c=1, which is 2.3x the full pipeline. This is a real, shippable improvement.
+## Open items
 
-### 4. Server-dominated pages get the largest win
-
-Pages where most components are server components (dashboards, content sites, blogs, docs) see the full renderToString-level performance (528 req/s). Pages with many client boundaries (e-commerce PLPs) see a 2.3–3.2x improvement. The win scales with the server-to-client component ratio.
-
-### 5. The implementation is surprisingly small
-
-Total new code: ~350 lines across the serializer, Fizz changes, and config exports. No changes to Flight, the reconciler, or client-side React. The `fusedMode` flag is per-request, so frameworks can enable it selectively.
-
-## Performance Measurement Journey
-
-We went through multiple iterations to get honest numbers:
-
-| Version | What it measured | Result | Problem |
-|---------|-----------------|--------|---------|
-| v1 | Sync CPU time, no async, tiny props | 54-79% overhead | Unrealistic scenarios |
-| v2 | Wall-clock time with simulated I/O | 1-4% overhead | Wrong metric — I/O wait is free for throughput |
-| v3 | Concurrent throughput, CPU-bound | 3-6x drop | Correct metric but Fizz-only "ceiling" was bogus |
-| v4 | Apples-to-apples, all modes | 4.8x server-only, 1.1x with clients | Stale build had TIM-487 props-skip baked in |
-| **Final** | Fresh build, concurrent, props included | **2.6–3.2x with client boundaries** | Honest numbers |
-
-Key lesson: always rebuild before benchmarking after source changes. And don't compare numbers across builds.
-
-## Open Items
-
-### Client-side hydration approach (TIM-485)
-
-We deferred modifying the reconciler. The spike should evaluate:
-- Option A: Modify reconciler hydration walker (complex, risky)
-- Option B: Flight fetch fallback for hydration data (extra round-trip)
-- Option C: Mini React roots per boundary (Islands Architecture)
+### Client-side hydration (TIM-485, TIM-477)
+The server emits `<!--C:ID-->` markers and a consolidated hydration `<script>`. The client strategy is undecided:
+- Option A: Modify reconciler hydration walker (complex)
+- Option B: Flight fetch fallback
+- Option C: Mini React roots per boundary (Islands)
 - Option D: Forest coordination layer
 
-For v1, the server-side win is shippable without any client-side changes.
+### Integration
+The `experimental_fusedMode` option is available on all server entry points. A framework needs to provide `experimental_bundlerConfig.resolveClientComponent($$id)` to map client reference IDs to actual server-side modules.
 
-### Future props optimization opportunities
-
-Not blockers, but could improve client-heavy page throughput further:
-- **Selective serialization**: Only serialize props the client can't extract from the DOM
-- **Deduplication**: Common prop shapes/values across boundaries
-- **Deferred serialization**: Stream HTML first, serialize props after shell flush
-- **Compact format**: Binary encoding instead of JSON (trade-off: needs client decoder)
-
-## How to Use
+## How to use
 
 ```js
 import { renderToPipeableStream } from 'react-dom/server';
 
-// Initial SSR — use fused mode
 const { pipe } = renderToPipeableStream(<App />, {
   experimental_fusedMode: true,
-  experimental_bundlerConfig: webpackManifest,
+  experimental_bundlerConfig: {
+    resolveClientComponent(id) {
+      // Map client reference $$id to the server-side module
+      return ssrModuleMap.get(id);
+    },
+  },
   onShellReady() { pipe(res); },
 });
-
-// Client navigation — use Flight (unchanged)
-const { pipe } = renderToFlightStream(<App />, webpackMap);
 ```
-
-Available on all server entry points: Node, Edge, Browser, Bun.

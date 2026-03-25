@@ -140,6 +140,17 @@ const ClientCard = clientExports(function ClientCard({product}) {
   );
 });
 
+// Build O(1) module resolver for fused mode (equivalent to __webpack_require__)
+const clientModuleById = new Map();
+for (const [idx, mod] of Object.entries(clientMods)) {
+  clientModuleById.set(url.pathToFileURL(idx).href, mod);
+}
+const fusedBundlerConfig = {
+  resolveClientComponent(id) {
+    return clientModuleById.get(id) || null;
+  },
+};
+
 function ServerApp() {
   const e = SReact.createElement;
   return e(
@@ -278,6 +289,7 @@ async function doFusedMode() {
   await new Promise((res, rej) => {
     const p = RDOM.renderToPipeableStream(SReact.createElement(ServerApp), {
       experimental_fusedMode: true,
+      experimental_bundlerConfig: fusedBundlerConfig,
       onShellReady() {
         p.pipe(hs);
       },
