@@ -24,6 +24,9 @@ import {
   pushSegmentFinale as pushSegmentFinaleImpl,
   pushStartActivityBoundary as pushStartActivityBoundaryImpl,
   pushEndActivityBoundary as pushEndActivityBoundaryImpl,
+  pushStartClientBoundary as pushStartClientBoundaryImpl,
+  pushEndClientBoundary as pushEndClientBoundaryImpl,
+  writeClientBoundaryScript as writeClientBoundaryScriptImpl,
   writeStartCompletedSuspenseBoundary as writeStartCompletedSuspenseBoundaryImpl,
   writeStartClientRenderedSuspenseBoundary as writeStartClientRenderedSuspenseBoundaryImpl,
   writeEndCompletedSuspenseBoundary as writeEndCompletedSuspenseBoundaryImpl,
@@ -257,6 +260,35 @@ export function pushEndActivityBoundary(
     return;
   }
   pushEndActivityBoundaryImpl(target, renderState);
+}
+
+export function pushStartClientBoundary(
+  target: Array<Chunk | PrecomputedChunk>,
+  id: number,
+): void {
+  pushStartClientBoundaryImpl(target, id);
+}
+
+export function pushEndClientBoundary(
+  target: Array<Chunk | PrecomputedChunk>,
+): void {
+  pushEndClientBoundaryImpl(target);
+}
+
+export function writeClientBoundaryScript(
+  destination: Destination,
+  id: number,
+  moduleId: string,
+  moduleName: string,
+  serializedProps: string,
+): boolean {
+  return writeClientBoundaryScriptImpl(
+    destination,
+    id,
+    moduleId,
+    moduleName,
+    serializedProps,
+  );
 }
 
 export function writeStartCompletedSuspenseBoundary(

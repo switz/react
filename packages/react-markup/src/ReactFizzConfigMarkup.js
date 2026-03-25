@@ -182,6 +182,32 @@ export function pushEndActivityBoundary(
   return;
 }
 
+export function pushStartClientBoundary(
+  target: Array<Chunk | PrecomputedChunk>,
+  id: number,
+): void {
+  // Markup doesn't have any instructions.
+  return;
+}
+
+export function pushEndClientBoundary(
+  target: Array<Chunk | PrecomputedChunk>,
+): void {
+  // Markup doesn't have any instructions.
+  return;
+}
+
+export function writeClientBoundaryScript(
+  destination: Destination,
+  id: number,
+  moduleId: string,
+  moduleName: string,
+  serializedProps: string,
+): boolean {
+  // Markup doesn't have any instructions.
+  return true;
+}
+
 export function writeStartCompletedSuspenseBoundary(
   destination: Destination,
   renderState: RenderState,

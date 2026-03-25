@@ -267,6 +267,32 @@ async function doFullPipeline() {
   return performance.now() - start;
 }
 
+async function doFusedMode() {
+  const start = performance.now();
+  // In fused mode, the tree goes directly to Fizz with server component
+  // functions and client reference proxies still present. No Flight at all.
+  // Fizz calls server component functions inline and wraps client refs
+  // in <!--C:ID--> markers with hydration data scripts.
+  const hs = new PassThrough();
+  const hc = collect(hs);
+  await new Promise((res, rej) => {
+    const p = RDOM.renderToPipeableStream(SReact.createElement(ServerApp), {
+      experimental_fusedMode: true,
+      onShellReady() {
+        p.pipe(hs);
+      },
+      onAllReady() {
+        res();
+      },
+      onShellError: rej,
+      onError() {},
+    });
+  });
+  hs.end();
+  await hc;
+  return performance.now() - start;
+}
+
 // ---------------------------------------------------------------------------
 // Concurrent runner
 // ---------------------------------------------------------------------------
@@ -344,11 +370,13 @@ async function main() {
   // Warmup
   for (let i = 0; i < 15; i++) await doFullPipeline();
   for (let i = 0; i < 15; i++) await doFizzOnly();
+  for (let i = 0; i < 15; i++) await doFusedMode();
 
   const fizzResults = [];
   const fullResults = [];
+  const fusedResults = [];
 
-  console.log('--- Fizz Only (fused renderer target) ---');
+  console.log('--- Fizz Only (theoretical ceiling) ---');
   console.log('    c | req/s  |      p50 |      p95 |      p99 |  Heap');
   console.log('  ----|--------|----------|----------|----------|------');
   for (const c of CONCURRENCIES) {
@@ -358,7 +386,7 @@ async function main() {
   }
 
   console.log('');
-  console.log('--- Full Flight→Fizz Pipeline (current) ---');
+  console.log('--- Full Flight→Fizz Pipeline (baseline) ---');
   console.log('    c | req/s  |      p50 |      p95 |      p99 |  Heap');
   console.log('  ----|--------|----------|----------|----------|------');
   for (const c of CONCURRENCIES) {
@@ -368,24 +396,35 @@ async function main() {
   }
 
   console.log('');
+  console.log('--- Fused Renderer (our implementation) ---');
+  console.log('    c | req/s  |      p50 |      p95 |      p99 |  Heap');
+  console.log('  ----|--------|----------|----------|----------|------');
+  for (const c of CONCURRENCIES) {
+    const r = await runConcurrent(doFusedMode, c, TOTAL_REQUESTS);
+    fusedResults.push({c, ...r});
+    console.log('  %s | %s', String(c).padStart(3), fmtRow(r));
+  }
+
+  console.log('');
   console.log('--- Comparison ---');
   console.log(
-    '    c | Fizz req/s | Full req/s | Throughput drop | p99 inflation | Heap overhead'
+    '    c | Fizz req/s | Full req/s | Fused req/s | Full→Fused | Fused vs Ceiling'
   );
   console.log(
-    '  ----|------------|------------|-----------------|---------------|-------------'
+    '  ----|------------|------------|-------------|------------|----------------'
   );
   for (let i = 0; i < CONCURRENCIES.length; i++) {
     const f = fizzResults[i];
     const p = fullResults[i];
+    const u = fusedResults[i];
     console.log(
-      '  %s | %s | %s |           %sx | %sx |       %sMB',
+      '  %s | %s | %s | %s |     %sx |     %s%%',
       String(CONCURRENCIES[i]).padStart(3),
       String(f.throughput).padStart(10),
       String(p.throughput).padStart(10),
-      (f.throughput / p.throughput).toFixed(1).padStart(4),
-      (p.p99 / f.p99).toFixed(1).padStart(5),
-      ((p.peakHeapDeltaMB - f.peakHeapDeltaMB).toFixed(0) + '').padStart(5)
+      String(u.throughput).padStart(11),
+      (u.throughput / p.throughput).toFixed(1).padStart(5),
+      ((u.throughput / f.throughput) * 100).toFixed(0).padStart(5)
     );
   }
 
@@ -396,7 +435,7 @@ async function main() {
   );
   require('fs').writeFileSync(
     jsonPath,
-    JSON.stringify({fizzResults, fullResults}, null, 2)
+    JSON.stringify({fizzResults, fullResults, fusedResults}, null, 2)
   );
   console.log('\nRaw results:', jsonPath);
 }
