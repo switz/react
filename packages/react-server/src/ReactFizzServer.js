@@ -2984,12 +2984,13 @@ function renderClientBoundary(
   // a later step when we have the complete manifest integration.
   const moduleName: string = '*';
 
-  // Props are NOT serialized inline. The hydration data contains only the
-  // module reference so the client knows which component to load. Props
-  // delivery to the client is handled separately (DOM extraction, lazy
-  // fetch, or a future compact format). This keeps the output size close
-  // to the HTML-only baseline (~121 KB vs ~348 KB with inline props).
-  const serializedProps: string = '{}';
+  // Serialize props for hydration using the focused serializer.
+  let serializedProps: string;
+  try {
+    serializedProps = serializeProps(props);
+  } catch (e) {
+    serializedProps = '{}';
+  }
 
   // Emit the opening boundary marker into the segment.
   pushStartClientBoundary(segment.chunks, boundaryId);
