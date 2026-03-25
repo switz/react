@@ -198,6 +198,12 @@ import {
   setCaptureSuspendedCallSiteDEV,
 } from './ReactFizzThenable';
 
+// Client reference tag used to detect 'use client' components in fused mode.
+// This is part of the stable bundler protocol — client components have
+// $$typeof === Symbol.for('react.client.reference'). We define it here
+// rather than importing from Flight to avoid coupling Fizz to Flight internals.
+const CLIENT_REFERENCE_TAG: symbol = Symbol.for('react.client.reference');
+
 // Linked list representing the identity of a component given the component/tag name and key.
 // The name might be minified but we assume that it's going to be the same generated name. Typically
 // because it's just the same compiled output in practice.
@@ -402,6 +408,16 @@ export opaque type Request = {
   onFatalError: (error: mixed) => void,
   // Form state that was the result of an MPA submission, if it was provided.
   formState: null | ReactFormState<any, any>,
+  // Fused renderer mode: when true, Fizz receives the original React tree with
+  // server component functions still present (not pre-resolved by Flight).
+  // Server components are called inline during rendering. Client components
+  // (marked with $$typeof === Symbol.for('react.client.reference')) are rendered
+  // to HTML and will emit hydration markers in a later step (TIM-475).
+  +fusedMode: boolean,
+  // The bundler config (e.g., webpack client manifest) passed through from the
+  // framework. Used by TIM-475/476 to resolve client module references at
+  // client component boundaries. Opaque to Fizz itself.
+  +bundlerConfig: mixed,
   // DEV-only, warning dedupe
   didWarnForKey?: null | WeakSet<ComponentStackNode>,
 };
@@ -515,6 +531,8 @@ function RequestInstance(
   onShellError: void | ((error: mixed) => void),
   onFatalError: void | ((error: mixed) => void),
   formState: void | null | ReactFormState<any, any>,
+  fusedMode: void | boolean,
+  bundlerConfig: mixed,
 ) {
   const pingedTasks: Array<Task> = [];
   const abortSet: Set<Task> = new Set();
@@ -547,6 +565,8 @@ function RequestInstance(
   this.onShellError = onShellError === undefined ? noop : onShellError;
   this.onFatalError = onFatalError === undefined ? noop : onFatalError;
   this.formState = formState === undefined ? null : formState;
+  this.fusedMode = fusedMode === true;
+  this.bundlerConfig = bundlerConfig === undefined ? null : bundlerConfig;
   if (__DEV__) {
     this.didWarnForKey = null;
   }
@@ -564,6 +584,8 @@ export function createRequest(
   onShellError: void | ((error: mixed) => void),
   onFatalError: void | ((error: mixed) => void),
   formState: void | null | ReactFormState<any, any>,
+  fusedMode: void | boolean,
+  bundlerConfig: mixed,
 ): Request {
   if (__DEV__) {
     resetOwnerStackLimit();
@@ -581,6 +603,8 @@ export function createRequest(
     onShellError,
     onFatalError,
     formState,
+    fusedMode,
+    bundlerConfig,
   );
 
   // This segment represents the root fallback.
@@ -2926,7 +2950,17 @@ function renderElement(
     if (shouldConstruct(type)) {
       renderClassComponent(request, task, keyPath, type, props);
       return;
+    } else if (request.fusedMode && type.$$typeof === CLIENT_REFERENCE_TAG) {
+      // Fused mode: this is a client component ('use client').
+      // For now, render it as a regular function component so it produces
+      // HTML for SSR. TIM-475 will add hydration marker emission here.
+      renderFunctionComponent(request, task, keyPath, type, props);
+      return;
     } else {
+      // Either fusedMode is false (standard Fizz path) or this is a server
+      // component (function without client reference tag). In both cases,
+      // call the function via renderFunctionComponent which uses
+      // renderWithHooks to execute it and render the output.
       renderFunctionComponent(request, task, keyPath, type, props);
       return;
     }
@@ -5100,8 +5134,8 @@ function retryRenderTask(
           // later, once we deprecate the old API in favor of `use`.
           getSuspendedThenable()
         : request.status === ABORTING
-          ? request.fatalError
-          : thrownValue;
+        ? request.fatalError
+        : thrownValue;
 
     if (request.status === ABORTING && request.trackedPostpones !== null) {
       // We are aborting a prerender and need to halt this task.
@@ -6088,9 +6122,9 @@ export function prepareForStartFlowingIfBeforeAllReady(request: Request) {
       ? // Render Request, we define shell complete by the pending root tasks
         request.pendingRootTasks === 0
       : // Prerender Request, we define shell complete by completedRootSegemtn
-        request.completedRootSegment === null
-        ? request.pendingRootTasks === 0
-        : request.completedRootSegment.status !== POSTPONED;
+      request.completedRootSegment === null
+      ? request.pendingRootTasks === 0
+      : request.completedRootSegment.status !== POSTPONED;
   safelyEmitEarlyPreloads(request, shellComplete);
 }
 
@@ -6135,10 +6169,10 @@ export function abort(request: Request, reason: mixed): void {
         reason === undefined
           ? new Error('The render was aborted by the server without a reason.')
           : typeof reason === 'object' &&
-              reason !== null &&
-              typeof reason.then === 'function'
-            ? new Error('The render was aborted by the server with a promise.')
-            : reason;
+            reason !== null &&
+            typeof reason.then === 'function'
+          ? new Error('The render was aborted by the server with a promise.')
+          : reason;
       // This error isn't necessarily fatal in this case but we need to stash it
       // so we can use it to abort any pending work
       request.fatalError = error;
