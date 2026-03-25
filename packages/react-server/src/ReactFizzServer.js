@@ -61,6 +61,9 @@ import {
   writePlaceholder,
   pushStartActivityBoundary,
   pushEndActivityBoundary,
+  pushStartClientBoundary,
+  pushEndClientBoundary,
+  writeClientBoundaryScript,
   writeStartCompletedSuspenseBoundary,
   writeStartPendingSuspenseBoundary,
   writeStartClientRenderedSuspenseBoundary,
@@ -415,9 +418,19 @@ export opaque type Request = {
   // to HTML and will emit hydration markers in a later step (TIM-475).
   +fusedMode: boolean,
   // The bundler config (e.g., webpack client manifest) passed through from the
-  // framework. Used by TIM-475/476 to resolve client module references at
-  // client component boundaries. Opaque to Fizz itself.
+  // framework. Used to resolve client module references at client component
+  // boundaries. Opaque to Fizz itself.
   +bundlerConfig: mixed,
+  // Queue of client boundary hydration data to emit during flushCompletedQueues.
+  // Each entry contains the boundary ID, module reference, and serialized props.
+  clientBoundaryQueue: Array<{
+    id: number,
+    moduleId: string,
+    moduleName: string,
+    serializedProps: string,
+  }>,
+  // Auto-incrementing ID for client boundary markers.
+  nextClientBoundaryId: number,
   // DEV-only, warning dedupe
   didWarnForKey?: null | WeakSet<ComponentStackNode>,
 };
@@ -567,6 +580,8 @@ function RequestInstance(
   this.formState = formState === undefined ? null : formState;
   this.fusedMode = fusedMode === true;
   this.bundlerConfig = bundlerConfig === undefined ? null : bundlerConfig;
+  this.clientBoundaryQueue = [];
+  this.nextClientBoundaryId = 0;
   if (__DEV__) {
     this.didWarnForKey = null;
   }
@@ -2938,6 +2953,73 @@ function renderViewTransition(
   task.keyPath = prevKeyPath;
 }
 
+// Fused mode: render a client component ('use client') to HTML with
+// boundary markers and queue hydration data for later emission.
+function renderClientBoundary(
+  request: Request,
+  task: Task,
+  keyPath: KeyNode,
+  type: any,
+  props: Object,
+): void {
+  const segment = task.blockedSegment;
+  if (segment === null) {
+    // Replay mode — just render the component without markers.
+    renderFunctionComponent(request, task, keyPath, type, props);
+    return;
+  }
+
+  // Assign a unique ID for this client boundary.
+  const boundaryId = request.nextClientBoundaryId++;
+
+  // Resolve the module reference from the client reference.
+  // Client references have $$id (module URL) on them.
+  const moduleId: string = type.$$id || '';
+  // The export name is typically '*' for default or the named export.
+  // In webpack, this is encoded in the manifest. For now, extract from $$id
+  // or default to '*'. The full resolution via bundlerConfig happens in
+  // a later step when we have the complete manifest integration.
+  const moduleName: string = '*';
+
+  // Serialize props for hydration. TIM-476 will replace this with a
+  // focused serializer. For now, use a basic JSON.stringify that handles
+  // the common cases.
+  let serializedProps: string;
+  try {
+    serializedProps = JSON.stringify(props, (key, value) => {
+      // Skip children for now — they're rendered as HTML, not serialized.
+      // The client will see the server-rendered DOM between the markers.
+      if (key === 'children') {
+        return undefined;
+      }
+      // Skip functions (event handlers, callbacks) — they can't be serialized.
+      if (typeof value === 'function') {
+        return undefined;
+      }
+      return value;
+    });
+  } catch (e) {
+    serializedProps = '{}';
+  }
+
+  // Emit the opening boundary marker into the segment.
+  pushStartClientBoundary(segment.chunks, boundaryId);
+
+  // Render the client component to HTML normally.
+  renderFunctionComponent(request, task, keyPath, type, props);
+
+  // Emit the closing boundary marker.
+  pushEndClientBoundary(segment.chunks);
+
+  // Queue hydration data for emission during flushCompletedQueues.
+  request.clientBoundaryQueue.push({
+    id: boundaryId,
+    moduleId,
+    moduleName,
+    serializedProps,
+  });
+}
+
 function renderElement(
   request: Request,
   task: Task,
@@ -2952,9 +3034,9 @@ function renderElement(
       return;
     } else if (request.fusedMode && type.$$typeof === CLIENT_REFERENCE_TAG) {
       // Fused mode: this is a client component ('use client').
-      // For now, render it as a regular function component so it produces
-      // HTML for SSR. TIM-475 will add hydration marker emission here.
-      renderFunctionComponent(request, task, keyPath, type, props);
+      // Render it to HTML (for SSR preview) wrapped in comment markers,
+      // and queue hydration data for emission during flush.
+      renderClientBoundary(request, task, keyPath, type, props);
       return;
     } else {
       // Either fusedMode is false (standard Fizz path) or this is a server
@@ -5975,7 +6057,21 @@ function flushCompletedQueues(
     completeWriting(destination);
     beginWriting(destination);
 
-    // TODO: Here we'll emit data used by hydration.
+    // Emit hydration data for client boundaries discovered during fused rendering.
+    if (request.fusedMode && request.clientBoundaryQueue.length > 0) {
+      const queue = request.clientBoundaryQueue;
+      for (let j = 0; j < queue.length; j++) {
+        const boundary = queue[j];
+        writeClientBoundaryScript(
+          destination,
+          boundary.id,
+          boundary.moduleId,
+          boundary.moduleName,
+          boundary.serializedProps,
+        );
+      }
+      request.clientBoundaryQueue.length = 0;
+    }
 
     // Next we emit any segments of any boundaries that are partially complete
     // but not deeply complete.

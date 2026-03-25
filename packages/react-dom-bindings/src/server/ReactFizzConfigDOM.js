@@ -565,8 +565,8 @@ export function createRenderState(
           typeof scriptConfig === 'string' || scriptConfig.crossOrigin == null
             ? undefined
             : scriptConfig.crossOrigin === 'use-credentials'
-              ? 'use-credentials'
-              : '';
+            ? 'use-credentials'
+            : '';
       }
 
       preloadBootstrapScriptOrModule(resumableState, renderState, src, props);
@@ -622,8 +622,8 @@ export function createRenderState(
           typeof scriptConfig === 'string' || scriptConfig.crossOrigin == null
             ? undefined
             : scriptConfig.crossOrigin === 'use-credentials'
-              ? 'use-credentials'
-              : '';
+            ? 'use-credentials'
+            : '';
       }
 
       preloadBootstrapScriptOrModule(resumableState, renderState, src, props);
@@ -836,8 +836,8 @@ export function createRootFormatContext(namespaceURI?: string): FormatContext {
     namespaceURI === 'http://www.w3.org/2000/svg'
       ? SVG_MODE
       : namespaceURI === 'http://www.w3.org/1998/Math/MathML'
-        ? MATHML_MODE
-        : ROOT_HTML_MODE;
+      ? MATHML_MODE
+      : ROOT_HTML_MODE;
   return createFormatContext(insertionMode, null, NO_SCOPE, null);
 }
 
@@ -2906,8 +2906,8 @@ function pushLink(
               props.onLoad && props.onError
                 ? '`onLoad` and `onError` props'
                 : props.onLoad
-                  ? '`onLoad` prop'
-                  : '`onError` prop';
+                ? '`onLoad` prop'
+                : '`onError` prop';
             console.error(
               'React encountered a `<link rel="stylesheet" .../>` with a `precedence` prop and %s. The presence of loading and error handlers indicates an intent to manage the stylesheet loading state from your from your Component code and React will not hoist or deduplicate this stylesheet. If your intent was to have React hoist and deduplciate this stylesheet using the `precedence` prop remove the %s, otherwise remove the `precedence` prop.',
               propDescription,
@@ -3084,8 +3084,8 @@ function pushStyle(
           typeof child === 'function'
             ? 'a Function'
             : typeof child === 'symbol'
-              ? 'a Sybmol'
-              : 'an Array';
+            ? 'a Sybmol'
+            : 'an Array';
         console.error(
           'React expect children of <style> tags to be a string, number, or object with a `toString` method but found %s instead. ' +
             'In browsers style Elements can only have `Text` Nodes as children.',
@@ -3874,8 +3874,8 @@ function pushScriptImpl(
         typeof children === 'number'
           ? 'a number for children'
           : Array.isArray(children)
-            ? 'an array for children'
-            : 'something unexpected for children';
+          ? 'an array for children'
+          : 'something unexpected for children';
       console.error(
         'A script element was rendered with %s. If script element has children it must be a single string.' +
           ' Consider using dangerouslySetInnerHTML or passing a plain string as children.',
@@ -4571,6 +4571,62 @@ export function pushEndActivityBoundary(
   renderState: RenderState,
 ): void {
   target.push(endActivityBoundary);
+}
+
+// Client boundary markers for fused renderer mode.
+// These mark the start and end of client component boundaries so the
+// hydration walker can recognize them and hydrate each subtree independently.
+const clientBoundaryStart1 = stringToPrecomputedChunk('<!--C:');
+const clientBoundaryStart2 = stringToPrecomputedChunk('-->');
+const clientBoundaryEnd = stringToPrecomputedChunk('<!--/C-->');
+
+export function pushStartClientBoundary(
+  target: Array<Chunk | PrecomputedChunk>,
+  id: number,
+): void {
+  target.push(clientBoundaryStart1);
+  target.push(stringToChunk(id.toString()));
+  target.push(clientBoundaryStart2);
+}
+
+export function pushEndClientBoundary(
+  target: Array<Chunk | PrecomputedChunk>,
+): void {
+  target.push(clientBoundaryEnd);
+}
+
+// Writes a <script> tag containing hydration data for a client boundary.
+// The data is a JSON object with the module reference and serialized props.
+const clientBoundaryScriptStart = stringToPrecomputedChunk(
+  '<script data-fused-hydration="',
+);
+const clientBoundaryScriptMid = stringToPrecomputedChunk('">');
+const clientBoundaryScriptEnd = stringToPrecomputedChunk('</script>');
+
+export function writeClientBoundaryScript(
+  destination: Destination,
+  id: number,
+  moduleId: string,
+  moduleName: string,
+  serializedProps: string,
+): boolean {
+  writeChunk(destination, clientBoundaryScriptStart);
+  writeChunk(destination, stringToChunk(id.toString()));
+  writeChunk(destination, clientBoundaryScriptMid);
+  // Encode the hydration payload as JSON. The client will parse this
+  // to get the module reference and props for hydration.
+  const payload = JSON.stringify({
+    m: moduleId,
+    n: moduleName,
+    p: serializedProps,
+  });
+  writeChunk(destination, stringToChunk(escapeScriptContent(payload)));
+  return writeChunkAndReturn(destination, clientBoundaryScriptEnd);
+}
+
+function escapeScriptContent(text: string): string {
+  // Escape </script and <!-- in script content to prevent XSS
+  return text.replace(/<\/(script)/gi, '<\\/$1').replace(/<!--/g, '<\\!--');
 }
 
 // Suspense boundaries are encoded as comments.
@@ -6264,8 +6320,8 @@ function preconnect(href: string, crossOrigin: ?CrossOriginEnum) {
       crossOrigin === 'use-credentials'
         ? 'credentials'
         : typeof crossOrigin === 'string'
-          ? 'anonymous'
-          : 'default';
+        ? 'anonymous'
+        : 'default';
     const key = getResourceKey(href);
     if (!resumableState.connectResources[bucket].hasOwnProperty(key)) {
       resumableState.connectResources[bucket][key] = EXISTS;

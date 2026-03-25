@@ -325,8 +325,7 @@ describe('ReactFizzFusedServer', () => {
       expect(html).toContain('<li>three</li>');
     });
 
-    it('does not break client reference functions (fall through)', async () => {
-      // Simulate a client reference: a function with $$typeof set
+    it('wraps client reference in boundary markers', async () => {
       const ClientComponent = Object.defineProperties(
         function ClientComponent({label}) {
           return <button>{label}</button>;
@@ -346,12 +345,200 @@ describe('ReactFizzFusedServer', () => {
         );
       }
 
-      // Client references should still render via renderFunctionComponent
-      // for now (TIM-475 will add marker emission)
       const html = await renderToString(<App />, {
         experimental_fusedMode: true,
       });
+      // Should still render the HTML
       expect(html).toContain('Click me');
+      // Should have boundary markers
+      expect(html).toContain('<!--C:0-->');
+      expect(html).toContain('<!--/C-->');
+      // Markers should wrap the button
+      const startIdx = html.indexOf('<!--C:0-->');
+      const buttonIdx = html.indexOf('<button>');
+      const endIdx = html.indexOf('<!--/C-->');
+      expect(startIdx).toBeLessThan(buttonIdx);
+      expect(buttonIdx).toBeLessThan(endIdx);
+    });
+
+    it('emits hydration data script for client boundaries', async () => {
+      const ClientComponent = Object.defineProperties(
+        function ClientComponent({label}) {
+          return <button>{label}</button>;
+        },
+        {
+          $$typeof: {value: Symbol.for('react.client.reference')},
+          $$id: {value: 'my-module#default'},
+          $$async: {value: false},
+        },
+      );
+
+      function App() {
+        return (
+          <div>
+            <ClientComponent label="Click me" />
+          </div>
+        );
+      }
+
+      const html = await renderToString(<App />, {
+        experimental_fusedMode: true,
+      });
+      // Should contain a hydration script with the module reference
+      expect(html).toContain('data-fused-hydration="0"');
+      expect(html).toContain('my-module#default');
+    });
+
+    it('assigns unique IDs to multiple client boundaries', async () => {
+      const ClientA = Object.defineProperties(
+        function ClientA() {
+          return <span>A</span>;
+        },
+        {
+          $$typeof: {value: Symbol.for('react.client.reference')},
+          $$id: {value: 'module-a#A'},
+          $$async: {value: false},
+        },
+      );
+
+      const ClientB = Object.defineProperties(
+        function ClientB() {
+          return <span>B</span>;
+        },
+        {
+          $$typeof: {value: Symbol.for('react.client.reference')},
+          $$id: {value: 'module-b#B'},
+          $$async: {value: false},
+        },
+      );
+
+      function App() {
+        return (
+          <div>
+            <ClientA />
+            <ClientB />
+          </div>
+        );
+      }
+
+      const html = await renderToString(<App />, {
+        experimental_fusedMode: true,
+      });
+      expect(html).toContain('<!--C:0-->');
+      expect(html).toContain('<!--C:1-->');
+      // Two hydration scripts
+      expect(html).toContain('data-fused-hydration="0"');
+      expect(html).toContain('data-fused-hydration="1"');
+      expect(html).toContain('module-a#A');
+      expect(html).toContain('module-b#B');
+    });
+
+    it('handles nested server-in-client-in-server', async () => {
+      function ServerOuter() {
+        return (
+          <section>
+            <h1>Server Outer</h1>
+            <ClientMiddle />
+          </section>
+        );
+      }
+
+      const ClientMiddle = Object.defineProperties(
+        function ClientMiddle() {
+          return (
+            <div className="client">
+              <ServerInner />
+            </div>
+          );
+        },
+        {
+          $$typeof: {value: Symbol.for('react.client.reference')},
+          $$id: {value: 'client-middle#default'},
+          $$async: {value: false},
+        },
+      );
+
+      function ServerInner() {
+        return <p>Server Inner Content</p>;
+      }
+
+      const html = await renderToString(<ServerOuter />, {
+        experimental_fusedMode: true,
+      });
+      expect(html).toContain('Server Outer');
+      expect(html).toContain('Server Inner Content');
+      // Client boundary should wrap the ClientMiddle output
+      expect(html).toContain('<!--C:0-->');
+      expect(html).toContain('<!--/C-->');
+      // The inner server content should be INSIDE the markers
+      const startIdx = html.indexOf('<!--C:0-->');
+      const innerIdx = html.indexOf('Server Inner Content');
+      const endIdx = html.indexOf('<!--/C-->');
+      expect(startIdx).toBeLessThan(innerIdx);
+      expect(innerIdx).toBeLessThan(endIdx);
+    });
+
+    it('serializes non-children props in hydration data', async () => {
+      const ClientComponent = Object.defineProperties(
+        function ClientComponent({title, count, active}) {
+          return (
+            <div>
+              {title} - {count} - {active ? 'yes' : 'no'}
+            </div>
+          );
+        },
+        {
+          $$typeof: {value: Symbol.for('react.client.reference')},
+          $$id: {value: 'props-test#default'},
+          $$async: {value: false},
+        },
+      );
+
+      const html = await renderToString(
+        <ClientComponent title="Hello" count={42} active={true} />,
+        {experimental_fusedMode: true},
+      );
+      // Parse the hydration script to verify props
+      const scriptMatch = html.match(
+        /data-fused-hydration="0">(.*?)<\/script>/,
+      );
+      expect(scriptMatch).not.toBeNull();
+      const payload = JSON.parse(scriptMatch[1]);
+      const props = JSON.parse(payload.p);
+      expect(props.title).toBe('Hello');
+      expect(props.count).toBe(42);
+      expect(props.active).toBe(true);
+      // children should NOT be in serialized props
+      expect(props.children).toBeUndefined();
+    });
+
+    it('does not emit markers or hydration data when fusedMode is false', async () => {
+      const ClientComponent = Object.defineProperties(
+        function ClientComponent({label}) {
+          return <button>{label}</button>;
+        },
+        {
+          $$typeof: {value: Symbol.for('react.client.reference')},
+          $$id: {value: 'test-module#ClientComponent'},
+          $$async: {value: false},
+        },
+      );
+
+      function App() {
+        return (
+          <div>
+            <ClientComponent label="Click me" />
+          </div>
+        );
+      }
+
+      const html = await renderToString(<App />);
+      expect(html).toContain('Click me');
+      // No markers
+      expect(html).not.toContain('<!--C:');
+      expect(html).not.toContain('<!--/C-->');
+      // No hydration scripts
+      expect(html).not.toContain('data-fused-hydration');
     });
   });
 });
