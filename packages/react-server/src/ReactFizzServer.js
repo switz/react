@@ -201,6 +201,8 @@ import {
   setCaptureSuspendedCallSiteDEV,
 } from './ReactFizzThenable';
 
+import {serializeProps} from './ReactFizzHydrationSerializer';
+
 // Client reference tag used to detect 'use client' components in fused mode.
 // This is part of the stable bundler protocol — client components have
 // $$typeof === Symbol.for('react.client.reference'). We define it here
@@ -2981,24 +2983,18 @@ function renderClientBoundary(
   // a later step when we have the complete manifest integration.
   const moduleName: string = '*';
 
-  // Serialize props for hydration. TIM-476 will replace this with a
-  // focused serializer. For now, use a basic JSON.stringify that handles
-  // the common cases.
+  // Serialize props for hydration using the focused serializer.
+  // Handles common types (primitives, objects, arrays, dates, bigint,
+  // server actions, client references) and replaces children with tombstones.
+  // Throws on unsupported types (Map, Set, TypedArray, ReadableStream).
   let serializedProps: string;
   try {
-    serializedProps = JSON.stringify(props, (key, value) => {
-      // Skip children for now — they're rendered as HTML, not serialized.
-      // The client will see the server-rendered DOM between the markers.
-      if (key === 'children') {
-        return undefined;
-      }
-      // Skip functions (event handlers, callbacks) — they can't be serialized.
-      if (typeof value === 'function') {
-        return undefined;
-      }
-      return value;
-    });
+    serializedProps = serializeProps(props);
   } catch (e) {
+    // If serialization fails (unsupported type or circular reference),
+    // fall back to empty props. The component will still render HTML
+    // but won't hydrate correctly — this is the expected degradation
+    // for exotic prop types in fused mode.
     serializedProps = '{}';
   }
 
