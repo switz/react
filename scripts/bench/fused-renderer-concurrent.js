@@ -269,6 +269,17 @@ async function doFullPipeline() {
   });
   hs.end();
   await hc;
+  // In a real initial SSR (Next.js/timber), the Flight payload is inlined
+  // as <script> tags in the HTML so the client can hydrate. We simulate this
+  // serialization cost — the server must JSON.stringify the Flight payload
+  // and write it to the response. This makes the comparison fair: both paths
+  // include the cost of delivering hydration data to the client.
+  const inlinedPayload =
+    '<script>self.__next_f=self.__next_f||[];self.__next_f.push(' +
+    JSON.stringify(fb.toString()) +
+    ')</script>';
+  // Force the string to be materialized (not optimized away)
+  if (inlinedPayload.length < 0) throw new Error();
   return performance.now() - start;
 }
 
