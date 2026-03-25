@@ -269,7 +269,7 @@ async function doFullPipeline() {
   });
   hs.end();
   await hc;
-  // In a real initial SSR (Next.js/timber), the Flight payload is inlined
+  // In a real initial SSR (Next.js), the Flight payload is inlined
   // as <script> tags in the HTML so the client can hydrate. We simulate this
   // serialization cost — the server must JSON.stringify the Flight payload
   // and write it to the response. This makes the comparison fair: both paths

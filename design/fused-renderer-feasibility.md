@@ -10,7 +10,7 @@ Approach A (reimplement Flight logic in Fizz) is fragile — Flight's serializat
 
 ## 1. Current Flight→Fizz Contract
 
-Today, Flight and Fizz communicate through React elements. The framework (Next.js, timber) orchestrates:
+Today, Flight and Fizz communicate through React elements. The framework (Next.js) orchestrates:
 
 ```
 Framework calls Flight.renderToReadableStream(tree, manifest)
@@ -223,7 +223,7 @@ test('client references use expected symbol', () => {
   expect(Symbol.for('react.client.reference')).toBe(CLIENT_REFERENCE_TAG);
 });
 
-// test: manifest format hasn't changed  
+// test: manifest format hasn't changed
 test('resolveClientReferenceMetadata returns expected shape', () => {
   const result = resolveClientReferenceMetadata(mockManifest, mockRef);
   expect(result).toHaveLength(3); // or 4 for async

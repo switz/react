@@ -118,7 +118,7 @@ A fused renderer skips three expensive operations:
 
 ## Correlation With Real-World Numbers
 
-The observed 400 rps (`renderToString`) → 40 rps (Next.js/timber RSC) drop decomposes as:
+The observed 400 rps (`renderToString`) → 40 rps (Next.js RSC) drop decomposes as:
 
 | Layer | Multiplier | Cumulative |
 |-------|-----------|-----------|

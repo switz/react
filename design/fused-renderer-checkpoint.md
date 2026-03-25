@@ -18,7 +18,7 @@ v3 measures concurrent throughput under realistic server load (c=1 to c=50). Key
 | **p99 latency** | 342ms | 49ms | **7.0x** |
 | **Heap pressure** | 282 MB | 72 MB | **-210 MB** |
 
-The throughput drop **worsens under load** (4x at c=1 → 5.9x at c=50) due to GC pressure from transient 349 KB wire format buffers per request. This directly explains the observed 400 rps → 40 rps drop in real-world Next.js/timber deployments (React-level 3–6x × framework overhead 1.5–2x ≈ 10x).
+The throughput drop **worsens under load** (4x at c=1 → 5.9x at c=50) due to GC pressure from transient 349 KB wire format buffers per request. This directly explains the observed 400 rps → 40 rps drop in real-world Next.js deployments (React-level 3–6x × framework overhead 1.5–2x ≈ 10x).
 
 See `design/fused-renderer-perf-validation.md` for full data.
 
